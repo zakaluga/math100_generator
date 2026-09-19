@@ -86,11 +86,12 @@ jobs:
           $modRaw = cmd /c "aqt list-qt windows desktop --modules $($pick.Ver) $($pick.Arch) 2>&1" | Out-String
           Write-Host "Modules for $($pick.Ver): $($modRaw.Trim())"
           # aqt pulls only its known auto-deps; Qt6WebEngineCore additionally
-          # needs Qt6WebChannel and Qt6Positioning (module "qtlocation") -
-          # both NOT auto-pulled (runs 35434724672, 35435830708). Add them if
-          # present for this version.
+          # needs Qt6WebChannel and Qt6Positioning - NOT auto-pulled (runs
+          # 35434724672, 35435830708). In Qt 6.10 Qt Positioning is a separate
+          # module "qtpositioning" (qtlocation alone is NOT enough - run
+          # 35436018797). Add whatever of these exists for this version.
           $mods = @('qtwebengine')
-          foreach ($extra in @('qtwebchannel', 'qtlocation')) {
+          foreach ($extra in @('qtwebchannel', 'qtlocation', 'qtpositioning')) {
             if ($modRaw -match [regex]::Escape($extra)) {
               $mods += $extra
               Write-Host "Adding module: $extra"
