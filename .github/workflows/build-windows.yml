@@ -127,9 +127,14 @@ jobs:
       # 6. Запускаем unit-тест mathsplit_test.
       #    Тест ищет фикстуры по относительному пути ../tests/testdata/mathsplit_cases.txt,
       #    поэтому cwd = build. Успех = exit 0 и сообщение "ALL PASS".
+      #    exe линкуется на Qt6Core.dll, а Qt-бин не в PATH (ран 35436360009:
+      #    exit 1 без единого символа вывода = не запустился, DLL не найдена).
       - name: Run unit tests (mathsplit_test)
         working-directory: build
-        run: Release\mathsplit_test.exe
+        shell: powershell
+        run: |
+          $env:PATH = "${{ steps.qtinstall.outputs.qt_root }}\bin;" + $env:PATH
+          .\Release\mathsplit_test.exe
 
       # 7. Деплой Qt-зависимостей рядом с exe (windeployqt из C:\qt\bin).
       #    --compiler-runtime: копирует MSVC-рантайм, пользователю не нужен VC++ Redistributable.
