@@ -10,6 +10,9 @@
         <!-- task-13: перенос цепочек формул на строки (зеркало mathsplit.cpp) -->
         <file alias="js/mathsplit.js">frontend/js/mathsplit.js</file>
         <file alias="styles.css">resources/styles.css</file>
+        <!-- task-20: иконка окна/taskbar (app.setWindowIcon, main.cpp).
+             Для exe (Проводник) — отдельно icon.rc -> icon.ico (WIN32). -->
+        <file alias="icon.png">icon-148-148.png</file>
         <!-- task-16b: MathJax 3.2.2 локально (в бинарнике, без CDN) — теперь
              через ГЕНЕРИРУЕМОЕ mathjax-embedded.qrc (см. CMakeLists.txt):
              scripts/embed_mathjax_fonts.py встраивает все 22 woff-шрифта

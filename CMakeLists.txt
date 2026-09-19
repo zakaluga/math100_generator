@@ -37,6 +37,14 @@ add_custom_command(
     VERBATIM)
 set_source_files_properties("${MJX_EMBED_QRC}" PROPERTIES GENERATED TRUE)
 
+# task-20: иконка приложения (Windows): icon.rc ссылается на icon.ico
+# (генерируется из icon-148-148.png скриптом /tmp/opencode/png2ico.py —
+# в репо закоммичен готовый icon.ico, 6 размеров 16..128).
+# На Linux .rc не участвует в сборке.
+if(WIN32)
+    set(APP_ICON_SOURCE icon.rc)
+endif()
+
 qt_add_executable(math100_generator
     main.cpp
     mainwindow.h mainwindow.cpp
@@ -46,6 +54,7 @@ qt_add_executable(math100_generator
     mathsplit.h mathsplit.cpp
     resources.qrc
     "${MJX_EMBED_QRC}"
+    ${APP_ICON_SOURCE}
 )
 
 target_link_libraries(math100_generator PRIVATE

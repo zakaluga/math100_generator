@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QStyleFactory>
+#include <QIcon>
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -195,6 +196,9 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("Math100Gen");
     app.setStyle(QStyleFactory::create("Fusion"));
+    // task-20: иконка окна/taskbar (PNG из qrc; для exe-файла на Windows —
+    // icon.rc -> icon.ico, см. CMakeLists.txt).
+    app.setWindowIcon(QIcon(QStringLiteral(":/icon.png")));
 
     // Стартовая строка в логе (идёт через handler => ленивое открытие файла).
     qInfo().noquote()

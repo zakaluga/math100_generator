@@ -1,0 +1,4 @@
+// Иконка приложения (Windows): файл в Проводнике + taskbar (default window icon).
+// ID 1 = первая иконка-ресурс — её использует Проводник и системный default.
+// Собирается только на WIN32 (см. CMakeLists.txt); на Linux/CI-Linux не участвует.
+1 ICON "icon.ico"
