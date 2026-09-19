@@ -237,6 +237,18 @@ def count_remaining(out_root, rep):
 
 
 def main(argv=None):
+    # Windows CI (ран 35444421956): stdout процесса-кастом-команды уходит в
+    # пайп, и Python по умолчанию кодирует его ANSI-кодовой страницей
+    # консоли (на англо-раннере — cp1252: ЛЮБАЯ кириллица = UnicodeEncodeError
+    # -> MSB8066 -> падает сборка). Лог-захват GH Actions — UTF-8, поэтому
+    # явно ставим UTF-8. Тот же урок, что и для PowerShell-скриптов:
+    # нативный процесс не должен полагаться на locale.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass
+
     ap = argparse.ArgumentParser(
         description="Встраивание шрифтов MathJax 3 (CHTML) как data: URIs "
                     "на этапе сборки (анти-CORS-блок qrc-шрифтов в Chromium).")
