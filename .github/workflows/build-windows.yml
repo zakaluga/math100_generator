@@ -30,6 +30,7 @@ jobs:
       #    В нашем коде только стабильные Qt6 API (WebEngine/Network/Widgets),
       #    поэтому любая 6.x с WebEngine подходит.
       - name: Install latest available Qt 6.x + WebEngine
+        id: qtinstall
         shell: powershell
         run: |
           # IMPORTANT (lessons from runs 35433391113 / 35434068943):
@@ -79,23 +80,35 @@ jobs:
           Write-Host "=== Installing Qt $($pick.Ver) / $($pick.Arch) + qtwebengine ==="
           $installLog = cmd /c "aqt install-qt windows desktop $($pick.Ver) $($pick.Arch) -O C:\qt -m qtwebengine 2>&1" | Out-String
           Write-Host $installLog
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # aqt lays out the install as C:\qt\<version>\<arch without "win64_" prefix>.
+          # CMake and windeployqt need the real root - export it for later steps.
+          $qtSub = $pick.Arch -replace '^win64_', ''
+          $qtRoot = "C:\qt\$($pick.Ver)\$qtSub"
+          Write-Host "Qt root: $qtRoot"
+          Add-Content $env:GITHUB_OUTPUT "qt_root=$qtRoot"
+          exit 0
 
-      # 4. Конфигурируем CMake: генератор Ninja (есть из коробки),
-      #    тип сборки Release, путь к Qt через CMAKE_PREFIX_PATH.
+      # 4. Конфигурируем CMake.
+      #    ВАЖНО (опыт рана 35434493236): НЕ использовать -G Ninja — на раннере
+      #    в PATH стоит MinGW g++ (C:/mingw64), и Ninja-генератор брал его вместо
+      #    MSVC, хотя Qt стоит MSVC-сборка. Генератор Visual Studio 2022 (по
+      #    умолчанию на раннере) гарантирует cl.exe. Qt путь — ДИНАМИЧЕСКИЙ:
+      #    aqt кладёт всё в C:\qt\<версия>\<арх>\, его выдал шаг qtinstall.
       - name: Configure CMake
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/qt
+        run: cmake -B build -DCMAKE_PREFIX_PATH=${{ steps.qtinstall.outputs.qt_root }}
 
       # 5. Собираем все цели (math100_generator и mathsplit_test).
+      #    Multi-config генератор: конфигурация задаётся --config Release.
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build --config Release --parallel
 
       # 6. Запускаем unit-тест mathsplit_test.
       #    Тест ищет фикстуры по относительному пути ../tests/testdata/mathsplit_cases.txt,
       #    поэтому cwd = build. Успех = exit 0 и сообщение "ALL PASS".
       - name: Run unit tests (mathsplit_test)
         working-directory: build
-        run: mathsplit_test.exe
+        run: Release\mathsplit_test.exe
 
       # 7. Деплой Qt-зависимостей рядом с exe (windeployqt из C:\qt\bin).
       #    --compiler-runtime: копирует MSVC-рантайм, пользователю не нужен VC++ Redistributable.
@@ -105,9 +118,12 @@ jobs:
       - name: Deploy Qt dependencies (windeployqt)
         shell: powershell
         run: |
+          # ASCII-only (PS 5.1 / ANSI .ps1 - см. шаг qtinstall).
+          # exe лежит в build\Release\ (multi-config генератор).
           New-Item -ItemType Directory -Force dist
-          Copy-Item build\math100_generator.exe dist\
-          & "C:\qt\bin\windeployqt.exe" --compiler-runtime --no-translations dist\math100_generator.exe
+          Copy-Item build\Release\math100_generator.exe dist\
+          & "${{ steps.qtinstall.outputs.qt_root }}\bin\windeployqt.exe" --compiler-runtime --no-translations dist\math100_generator.exe
+          exit $LASTEXITCODE
 
       # 8. Архивируем готовую папку dist в zip.
       - name: Create zip archive
