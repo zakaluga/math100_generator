@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QThread>
+#include <QElapsedTimer>
 
 #include <cstdio>
 
