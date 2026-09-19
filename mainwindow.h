@@ -31,6 +31,8 @@ private slots:
     void onTaskSelected(int index);
     void onTaskPageLoaded(const QString &html, const QString &url);
     void onClearCache();
+    // task-22: скачать оригинальный PDF варианта со сайта (второй источник).
+    void onOriginalPdf();
     void onExportDialog();
     void onPresetStudent();
     void onPresetTeacher();
@@ -48,6 +50,9 @@ private:
     QLineEdit *m_urlEdit;
     QPushButton *m_fetchButton;
     QPushButton *m_clearButton;
+    // task-22: «Оригинальный PDF сайта» — видна только если у варианта есть
+    // data-m100-pdf-src (canvas-only страницы: единственный источник).
+    QPushButton *m_origPdfButton;
     QPushButton *m_exportButton;
     QPushButton *m_studentButton;
     QPushButton *m_teacherButton;

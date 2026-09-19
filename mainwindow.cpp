@@ -16,6 +16,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_urlEdit(new QLineEdit(this))
     , m_fetchButton(new QPushButton("Загрузить вариант", this))
     , m_clearButton(new QPushButton("Очистить кэш", this))
+    , m_origPdfButton(new QPushButton("Оригинальный PDF сайта", this))
     , m_exportButton(new QPushButton("Экспорт PDF…", this))
     , m_studentButton(new QPushButton("PDF: все задания (студент)", this))
     , m_teacherButton(new QPushButton("PDF: задания+ответы+решения (преподаватель)", this))
@@ -37,6 +38,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_fetchButton, &QPushButton::clicked, this, &MainWindow::onFetchUrl);
     connect(m_taskList, &QListWidget::currentRowChanged, this, &MainWindow::onTaskSelected);
     connect(m_clearButton, &QPushButton::clicked, this, &MainWindow::onClearCache);
+    connect(m_origPdfButton, &QPushButton::clicked, this, &MainWindow::onOriginalPdf);
+    // task-22: результат загрузки вариант-PDF.
+    connect(m_networkManager, &NetworkManager::variantPdfFinished, this,
+            [this](bool ok, const QString &message) {
+        m_origPdfButton->setEnabled(true);
+        if (ok) {
+            updateStatus("Оригинальный PDF сохранён: " + message);
+        } else {
+            updateStatus("Ошибка загрузки PDF: " + message);
+            QMessageBox::critical(this, "Ошибка", "Не удалось скачать оригинальный PDF:\n" + message);
+        }
+    });
     connect(m_exportButton, &QPushButton::clicked, this, &MainWindow::onExportDialog);
     connect(m_studentButton, &QPushButton::clicked, this, &MainWindow::onPresetStudent);
     connect(m_teacherButton, &QPushButton::clicked, this, &MainWindow::onPresetTeacher);
@@ -56,7 +69,22 @@ MainWindow::MainWindow(QWidget *parent)
         }
         m_taskList->setCurrentRow(0);
         m_progressBar->setValue(100);
-        updateStatus(QString("Загружено %1 задач").arg(urls.size()));
+
+        // task-22: второй источник — оригинальный PDF сайта (data-m100-pdf-src).
+        const bool hasSitePdf = !m_networkManager->variantPdfUrl().isEmpty();
+        m_origPdfButton->setVisible(hasSitePdf);
+        if (urls.isEmpty() && hasSitePdf) {
+            // «canvas-only» страница (демо-варианты): HTML-задач нет,
+            // единственный материал — PDF сайта.
+            updateStatus("HTML-задачи не найдены — доступен только "
+                         "«Оригинальный PDF сайта»");
+        } else if (hasSitePdf) {
+            updateStatus(QString("Загружено %1 задач. Доступен "
+                                 "«Оригинальный PDF сайта»")
+                         .arg(urls.size()));
+        } else {
+            updateStatus(QString("Загружено %1 задач").arg(urls.size()));
+        }
         disableUI(false);
     });
     connect(m_networkManager, &NetworkManager::errorOccurred, this, [this](const QString &error) {
@@ -113,10 +141,13 @@ void MainWindow::setupUI()
 
     mainLayout->addLayout(middleLayout, 10);
 
-    // Bottom bar 1: clear button + status
+    // Bottom bar 1: [Оригинальный PDF сайта — по наличию] + clear + status
     // (task-21: кнопка «Скачать PDF» удалена — рудимент, функцию полностью
-    //  покрывает «Экспорт PDF…» с выбором одной задачи)
+    //  покрывает «Экспорт PDF…» с выбором одной задачи; task-22: m_origPdfButton
+    //  видна только если у варианта есть data-m100-pdf-src)
     auto *bottomLayout = new QHBoxLayout();
+    m_origPdfButton->hide();
+    bottomLayout->addWidget(m_origPdfButton);
     bottomLayout->addWidget(m_clearButton);
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_statusLabel);
@@ -142,6 +173,12 @@ void MainWindow::setupUI()
     m_clearButton->setStyleSheet(
         "QPushButton { padding: 6px 16px; background-color: #f44336; color: white; border: none; border-radius: 4px; }"
         "QPushButton:hover { background-color: #d32f2f; }"
+    );
+    // task-22: синий — «скачать готовый файл сайта» (не экспорт).
+    m_origPdfButton->setStyleSheet(
+        "QPushButton { padding: 6px 16px; font-weight: bold; background-color: #2196F3; color: white; border: none; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #1976D2; }"
+        "QPushButton:disabled { background-color: #cccccc; }"
     );
     m_exportButton->setStyleSheet(
         "QPushButton { padding: 6px 14px; font-weight: bold; background-color: #607D8B; color: white; border: none; border-radius: 4px; }"
@@ -179,6 +216,8 @@ void MainWindow::onFetchUrl()
     disableUI(true);
     m_progressBar->setValue(0);
     m_taskList->clear();
+    // task-22: пока вариант не загружен — старый PDF-URL не актуален.
+    m_origPdfButton->hide();
     updateStatus("Загрузка страницы варианта...");
 
     m_networkManager->fetchVariantPage(url);
@@ -215,6 +254,46 @@ void MainWindow::onClearCache()
         m_networkManager->clearCache();
         QMessageBox::information(this, "Кэш очищен", "Кэш страниц и изображений очищен");
     }
+}
+
+void MainWindow::onOriginalPdf()
+{
+    // task-22: скачать оригинальный PDF варианта со сайта (pdf.math100.ru).
+    if (!m_networkManager || m_networkManager->variantPdfUrl().isEmpty()) {
+        return;
+    }
+
+    // Имя по умолчанию: последний сегмент URL варианта + ".pdf".
+    QString base = "variant";
+    const QStringList segments = QUrl(m_urlEdit->text().trimmed()).path()
+        .split('/', Qt::SkipEmptyParts);
+    if (!segments.isEmpty()) {
+        const QString last = segments.last().simplified();
+        if (!last.isEmpty()) {
+            base = last;
+        }
+    }
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::homePath();
+    }
+    QDir().mkpath(dir);
+
+    QString path = QFileDialog::getSaveFileName(
+        this,
+        tr("Сохранить оригинальный PDF варианта"),
+        dir + '/' + base + ".pdf",
+        tr("PDF-файлы (*.pdf)"));
+    if (path.isEmpty()) {
+        return; // отмена
+    }
+    if (!path.endsWith(".pdf", Qt::CaseInsensitive)) {
+        path += ".pdf";
+    }
+
+    m_origPdfButton->setEnabled(false);
+    updateStatus("Скачивание оригинального PDF...");
+    m_networkManager->downloadVariantPdf(path);
 }
 
 void MainWindow::onExportDialog()
@@ -338,6 +417,7 @@ void MainWindow::disableUI(bool disabled)
     m_fetchButton->setEnabled(!disabled);
     m_urlEdit->setEnabled(!disabled);
     m_taskList->setEnabled(!disabled);
+    m_origPdfButton->setEnabled(!disabled);
     m_exportButton->setEnabled(!disabled);
     m_studentButton->setEnabled(!disabled);
     m_teacherButton->setEnabled(!disabled);

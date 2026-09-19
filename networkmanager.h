@@ -31,6 +31,19 @@ public:
     void fetchTaskPage(const QString &taskUrl);
     void clearCache();
 
+    // task-22: второй источник данных — оригинальный PDF сайта.
+    // Страницы math100.ru встраивают готовый PDF (pdf.js «canvas» — это он):
+    // <div class="m100-pdf" data-m100-pdf-src="https://pdf.math100.ru/pdf/<uuid>/wm.pdf">.
+    // На «canvas-only» страницах (например, демо-варианты) HTML-задач НЕТ
+    // вообще — PDF единственный доступный материал.
+    // URL обнаруживается при fetchVariantPage (data-m100-pdf-src, fallback:
+    // первая ссылка https://pdf.math100.ru/pdf/.../*.pdf). Пустая строка —
+    // на странице варианта PDF нет.
+    QString variantPdfUrl() const { return m_variantPdfUrl; }
+    // Скачивает вариант-PDF в filePath (асинхронно; прогресс — через
+    // downloadProgress; результат — через variantPdfFinished).
+    void downloadVariantPdf(const QString &filePath);
+
     // Извлекает ТОЛЬКО контент задачи (div.post-content, balanced) из HTML страницы
     // math100.ru: убирает script/iframe/noscript, RTB-блоки, конвертирует спойлеры
     // math100-spoiler в видимые блоки task-answer-*. Чистая функция, без сети/состояния.
@@ -61,6 +74,8 @@ signals:
     void taskPageFetched(const QString &html, const QString &url);
     void errorOccurred(const QString &error);
     void downloadProgress(int percent);
+    // task-22: завершение загрузки вариант-PDF (ok, path или текст ошибки).
+    void variantPdfFinished(bool ok, const QString &message);
 
 private slots:
     void onReplyFinished(QNetworkReply *reply);
@@ -139,8 +154,14 @@ private:
     // (секции .pdf-task или таблица).
     static QString buildExportPageHtml(const QString &bodyHtml, bool useTable = false);
 
+    // task-22: детект URL оригинального PDF в HTML страницы варианта
+    // (чистая функция — вынесена для тестуемости, как extractTaskUrls).
+    static QString extractVariantPdfUrl(const QString &html);
+
     mutable QNetworkAccessManager m_networkManager;
     QString m_variantBaseUrl;
+    QString m_variantPdfUrl;   // task-22: "" — на странице варианта PDF нет
+    bool m_pdfDownloadInProgress = false;
     QHash<QString, QNetworkReply*> m_activeReplies;
     mutable QMap<QString, QByteArray> m_pageCache;
     mutable QMutex m_cacheMutex;

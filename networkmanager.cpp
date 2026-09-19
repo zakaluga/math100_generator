@@ -82,6 +82,8 @@ NetworkManager::NetworkManager(QObject *parent)
 void NetworkManager::fetchVariantPage(const QString &variantUrl)
 {
     m_variantBaseUrl = variantUrl;
+    // task-22: новый вариант — старый PDF-URL не актуален.
+    m_variantPdfUrl.clear();
     updateProgress(5);
 
     QNetworkRequest request{QUrl(variantUrl)};
@@ -108,6 +110,61 @@ void NetworkManager::fetchTaskPage(const QString &taskUrl)
     m_activeReplies[taskUrl] = reply;
 }
 
+// task-22: извлечение URL оригинального PDF сайта из HTML страницы варианта.
+// Первичный источник — машинно-читаемый атрибут pdf.js-вьюера:
+//   <div class="m100-pdf" data-m100-pdf-src="https://pdf.math100.ru/pdf/<uuid>/wm.pdf">
+// Fallback — любая ссылка на поддомен pdf.math100.ru (iframe в <noscript>).
+// Чистая функция (без состояния) — как extractTaskUrls.
+QString NetworkManager::extractVariantPdfUrl(const QString &html)
+{
+    static const QRegularExpression reAttr(
+        R"(data-m100-pdf-src=\"(https://pdf\.math100\.ru/[^\"']+)\")");
+    const QRegularExpressionMatch m = reAttr.match(html);
+    if (m.hasMatch()) {
+        return m.captured(1);
+    }
+    static const QRegularExpression reAny(
+        R"((https://pdf\.math100\.ru/pdf/[^\"'\s\\]+?\.pdf))");
+    const QRegularExpressionMatch m2 = reAny.match(html);
+    if (m2.hasMatch()) {
+        return m2.captured(1);
+    }
+    return QString();
+}
+
+void NetworkManager::downloadVariantPdf(const QString &filePath)
+{
+    if (m_variantPdfUrl.isEmpty()) {
+        emit variantPdfFinished(false, "У варианта нет оригинального PDF");
+        return;
+    }
+    if (m_pdfDownloadInProgress) {
+        emit variantPdfFinished(false, "PDF уже скачивается");
+        return;
+    }
+    m_pdfDownloadInProgress = true;
+
+    QNetworkRequest req{QUrl(m_variantPdfUrl)};
+    req.setRawHeader("User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    // Реферер не требуется (проверено: открытая ссылка), но вежливее с ним.
+    if (!m_variantBaseUrl.isEmpty()) {
+        req.setRawHeader("Referer", m_variantBaseUrl.toUtf8());
+    }
+
+    auto *reply = m_networkManager.get(req);
+    reply->setProperty("type", "variant_pdf");
+    reply->setProperty("save_path", filePath);
+    m_activeReplies.insert(m_variantPdfUrl, reply);
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [this](qint64 done, qint64 total) {
+        if (total > 0) {
+            updateProgress(int(done * 100 / total));
+        }
+    });
+}
+
 void NetworkManager::clearCache()
 {
     QString cacheDir = QCoreApplication::applicationDirPath() + "/cache";
@@ -128,6 +185,16 @@ void NetworkManager::onReplyFinished(QNetworkReply *reply)
         QString error = QString("Ошибка: %1 (%2)")
             .arg(reply->errorString())
             .arg(url);
+        // task-22: сбой PDF-загрузки — отдельный сигнал (кнопка
+        // перерисовывается по variantPdfFinished; errorOccurred не шлём,
+        // чтобы не дублировать сообщение).
+        if (type == "variant_pdf") {
+            m_activeReplies.remove(url);
+            m_pdfDownloadInProgress = false;
+            emit variantPdfFinished(false, error);
+            reply->deleteLater();
+            return;
+        }
         emit errorOccurred(error);
         m_activeReplies.remove(url);
         reply->deleteLater();
@@ -146,6 +213,14 @@ void NetworkManager::onReplyFinished(QNetworkReply *reply)
         // task-9: кап mid(0, 30) УБРАН — возвращаем все найденные задачи
         // (на live-страницах вариантов их может быть > 30, например 33).
 
+        // task-22: второй источник — URL оригинального PDF сайта
+        // (data-m100-pdf-src блока .m100-pdf; на canvas-only страницах
+        // taskUrls может быть пуст, а PDF есть — единственный материал).
+        m_variantPdfUrl = extractVariantPdfUrl(html);
+        if (!m_variantPdfUrl.isEmpty()) {
+            qInfo() << "Variant PDF available:" << m_variantPdfUrl;
+        }
+
         // Pre-cache task pages sequentially.
         // (task-7: «скачать+почистить+в кэш» вынесен в fetchAndCacheTaskPage —
         //  тем же путём пользуется buildExportDocument.)
@@ -156,6 +231,32 @@ void NetworkManager::onReplyFinished(QNetworkReply *reply)
 
         updateProgress(80);
         emit pageListFetched(taskUrls);
+    } else if (type == "variant_pdf") {
+        // task-22: скачанный вариант-PDF — проверяем заголовок и пишем в файл.
+        m_activeReplies.remove(url);
+        m_pdfDownloadInProgress = false;
+        reply->deleteLater();
+
+        const QString filePath = reply->property("save_path").toString();
+        if (!data.startsWith("%PDF")) {
+            qWarning() << "Variant PDF: не похоже на PDF (нет %PDF), size"
+                       << data.size();
+            emit variantPdfFinished(false,
+                "Сервер вернул не PDF (ошибка сервера или защита)");
+            return;
+        }
+        QFile f(filePath);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            qWarning() << "Variant PDF: не удалось открыть файл"
+                       << filePath << f.errorString();
+            emit variantPdfFinished(false, "Не удалось открыть файл для записи: "
+                                            + f.errorString());
+            return;
+        }
+        f.write(data);
+        f.close();
+        qInfo() << "Variant PDF saved:" << filePath << "(" << data.size() << "байт)";
+        emit variantPdfFinished(true, filePath);
     } else if (type == "task") {
         m_activeReplies.remove(url);
         reply->deleteLater();
