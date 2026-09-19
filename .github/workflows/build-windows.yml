@@ -78,10 +78,21 @@ jobs:
           $pick = @($cands | Where-Object { $_.Ver -like '6.*' }) | Select-Object -First 1
           if (-not $pick) { $pick = $cands[0]; Write-Host "WARNING: no 6.x available, taking $($pick.Ver)" }
           Write-Host "=== Installing Qt $($pick.Ver) / $($pick.Arch) + qtwebengine ==="
-          # Modules: qtwebengine + qtwebchannel (WebChannel NOT pulled
-          # automatically by aqt - CMake fails on Qt6WebChannel_DIR, run
-          # 35434724672). Comma-separated list is aqt syntax.
-          $installLog = cmd /c "aqt install-qt windows desktop $($pick.Ver) $($pick.Arch) -O C:\qt -m qtwebengine,qtwebchannel 2>&1" | Out-String
+          # Modules: qtwebengine always + qtwebchannel IF it exists as a
+          # separate module for this version (aqt syntax: space-separated args
+          # after -m; a comma is parsed as part of one package name - run
+          # 35435056529). WebChannel is NOT pulled automatically (CMake fails
+          # on Qt6WebChannel_DIR - run 35434724672).
+          $modRaw = cmd /c "aqt list-qt windows desktop --modules $($pick.Ver) $($pick.Arch) 2>&1" | Out-String
+          Write-Host "Modules for $($pick.Ver): $($modRaw.Trim())"
+          $mods = @('qtwebengine')
+          if ($modRaw -match 'qtwebchannel') {
+            $mods += 'qtwebchannel'
+            Write-Host "qtwebchannel is a separate module - adding it"
+          } else {
+            Write-Host "WARNING: qtwebchannel not in the module list (may be bundled elsewhere)"
+          }
+          $installLog = cmd /c "aqt install-qt windows desktop $($pick.Ver) $($pick.Arch) -O C:\qt -m $($mods -join ' ') 2>&1" | Out-String
           Write-Host $installLog
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # aqt lays out the install as C:\qt\<version>\<arch without "win64_" prefix>.
