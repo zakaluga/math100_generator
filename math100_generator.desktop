@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Math100 PDF Generator
+GenericName=Math100 PDF Generator
+Comment=Генератор PDF вариантов ЕГЭ по математике с math100.ru
+Exec=math100_generator
+Icon=math100_generator
+Categories=Education;
+Terminal=false
+StartupNotify=false

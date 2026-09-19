@@ -1,0 +1,74 @@
+<RCC>
+    <qresource prefix="/">
+        <!-- alias, чтобы qrc:/css/style.css, qrc:/js/app.js, qrc:/js/pdf.js
+             совпадали со ссылками в webenginehost.cpp / frontend/index.html -->
+        <file alias="index.html">frontend/index.html</file>
+        <file alias="css/style.css">frontend/css/style.css</file>
+        <file alias="js/app.js">frontend/js/app.js</file>
+        <file alias="js/pdf.js">frontend/js/pdf.js</file>
+        <file alias="js/renderer.js">frontend/js/renderer.js</file>
+        <!-- task-13: перенос цепочек формул на строки (зеркало mathsplit.cpp) -->
+        <file alias="js/mathsplit.js">frontend/js/mathsplit.js</file>
+        <file alias="styles.css">resources/styles.css</file>
+        <!-- task-11d: MathJax 3.2.2 локально (в бинарнике, без CDN).
+             URL: qrc:/mathjax/es5/tex-mml-chtml.js — простой <script src> в
+             NetworkManager::buildExportPageHtml (networkmanager.cpp).
+             Шрифты: физические файлы resources/mathjax/fonts/*.woff (это
+             es5/output/chtml/fonts/woff-v2 из npm-пакета). ДВЕ алиасы на
+             каждый файл:
+               qrc:/mathjax/fonts/<имя> — канонический URL по task-11d;
+               qrc:/mathjax/es5/output/chtml/fonts/woff-v2/<имя> — URL,
+             который реально запрашивает MathJax 3.2.2: fontURL резолвится
+             как Package.resolvePath("output/chtml/fonts/woff-v2") =
+             <директория скрипта>/output/chtml/fonts/woff-v2, а директория
+             скрипта = qrc:/mathjax/es5. Без второго алиаса @font-face
+             молча 404 и формулы рендерятся системным шрифтом. -->
+        <file alias="mathjax/es5/tex-mml-chtml.js">resources/mathjax/es5/tex-mml-chtml.js</file>
+        <file alias="mathjax/fonts/MathJax_AMS-Regular.woff">resources/mathjax/fonts/MathJax_AMS-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff">resources/mathjax/fonts/MathJax_AMS-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Calligraphic-Bold.woff">resources/mathjax/fonts/MathJax_Calligraphic-Bold.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff">resources/mathjax/fonts/MathJax_Calligraphic-Bold.woff</file>
+        <file alias="mathjax/fonts/MathJax_Calligraphic-Regular.woff">resources/mathjax/fonts/MathJax_Calligraphic-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Regular.woff">resources/mathjax/fonts/MathJax_Calligraphic-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Fraktur-Bold.woff">resources/mathjax/fonts/MathJax_Fraktur-Bold.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Bold.woff">resources/mathjax/fonts/MathJax_Fraktur-Bold.woff</file>
+        <file alias="mathjax/fonts/MathJax_Fraktur-Regular.woff">resources/mathjax/fonts/MathJax_Fraktur-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Regular.woff">resources/mathjax/fonts/MathJax_Fraktur-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Main-Bold.woff">resources/mathjax/fonts/MathJax_Main-Bold.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Main-Bold.woff">resources/mathjax/fonts/MathJax_Main-Bold.woff</file>
+        <file alias="mathjax/fonts/MathJax_Main-Italic.woff">resources/mathjax/fonts/MathJax_Main-Italic.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Main-Italic.woff">resources/mathjax/fonts/MathJax_Main-Italic.woff</file>
+        <file alias="mathjax/fonts/MathJax_Main-Regular.woff">resources/mathjax/fonts/MathJax_Main-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff">resources/mathjax/fonts/MathJax_Main-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Math-BoldItalic.woff">resources/mathjax/fonts/MathJax_Math-BoldItalic.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Math-BoldItalic.woff">resources/mathjax/fonts/MathJax_Math-BoldItalic.woff</file>
+        <file alias="mathjax/fonts/MathJax_Math-Italic.woff">resources/mathjax/fonts/MathJax_Math-Italic.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff">resources/mathjax/fonts/MathJax_Math-Italic.woff</file>
+        <file alias="mathjax/fonts/MathJax_Math-Regular.woff">resources/mathjax/fonts/MathJax_Math-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Math-Regular.woff">resources/mathjax/fonts/MathJax_Math-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_SansSerif-Bold.woff">resources/mathjax/fonts/MathJax_SansSerif-Bold.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Bold.woff">resources/mathjax/fonts/MathJax_SansSerif-Bold.woff</file>
+        <file alias="mathjax/fonts/MathJax_SansSerif-Italic.woff">resources/mathjax/fonts/MathJax_SansSerif-Italic.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Italic.woff">resources/mathjax/fonts/MathJax_SansSerif-Italic.woff</file>
+        <file alias="mathjax/fonts/MathJax_SansSerif-Regular.woff">resources/mathjax/fonts/MathJax_SansSerif-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Regular.woff">resources/mathjax/fonts/MathJax_SansSerif-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Script-Regular.woff">resources/mathjax/fonts/MathJax_Script-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Script-Regular.woff">resources/mathjax/fonts/MathJax_Script-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Size1-Regular.woff">resources/mathjax/fonts/MathJax_Size1-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff">resources/mathjax/fonts/MathJax_Size1-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Size2-Regular.woff">resources/mathjax/fonts/MathJax_Size2-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Size2-Regular.woff">resources/mathjax/fonts/MathJax_Size2-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Size3-Regular.woff">resources/mathjax/fonts/MathJax_Size3-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Size3-Regular.woff">resources/mathjax/fonts/MathJax_Size3-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Size4-Regular.woff">resources/mathjax/fonts/MathJax_Size4-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Size4-Regular.woff">resources/mathjax/fonts/MathJax_Size4-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Typewriter-Regular.woff">resources/mathjax/fonts/MathJax_Typewriter-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Typewriter-Regular.woff">resources/mathjax/fonts/MathJax_Typewriter-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Vector-Bold.woff">resources/mathjax/fonts/MathJax_Vector-Bold.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Bold.woff">resources/mathjax/fonts/MathJax_Vector-Bold.woff</file>
+        <file alias="mathjax/fonts/MathJax_Vector-Regular.woff">resources/mathjax/fonts/MathJax_Vector-Regular.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Regular.woff">resources/mathjax/fonts/MathJax_Vector-Regular.woff</file>
+        <file alias="mathjax/fonts/MathJax_Zero.woff">resources/mathjax/fonts/MathJax_Zero.woff</file>
+        <file alias="mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Zero.woff">resources/mathjax/fonts/MathJax_Zero.woff</file>
+    </qresource>
+</RCC>

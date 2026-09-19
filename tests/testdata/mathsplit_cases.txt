@@ -1,0 +1,10 @@
+IN	\dfrac{{{T_1} - 340}}{{{T_1}}} \cdot 100 \geqslant 15\,\,|\, \cdot {T_1} &gt; 0\,\,\, \Leftrightarrow \,\,\,100{T_1} - 34000 \geqslant 15{T_1}\,\, \Leftrightarrow \,\,85{T_1} \geqslant 34000\,\, \Leftrightarrow \,\,{T_1} \geqslant 400	\dfrac{{{T_1} - 340}}{{{T_1}}} \cdot 100 \geqslant 15\,\,|\, \cdot {T_1} &gt; 0\\\Leftrightarrow\, 100{T_1} - 34000 \geqslant 15{T_1}\\\Leftrightarrow\, 85{T_1} \geqslant 34000\\\Leftrightarrow\, {T_1} \geqslant 400
+IN	A\,\,\, \Leftrightarrow \,\,\,B	A\,\,\, \Leftrightarrow \,\,\,B
+IN	x \geqslant 3	x \geqslant 3
+IN	\left( {a} + {b} \right) \geqslant 0\,\,\, \Leftrightarrow \,\,\,{a} \geqslant {-b}	\left( {a} + {b} \right) \geqslant 0\,\,\, \Leftrightarrow \,\,\,{a} \geqslant {-b}
+IN	{x} &gt; 0\,\,\,\,{x} &lt; 5\,\,\,\,{y} = 1	{x} &gt; 0\,\,\,\,{x} &lt; 5\,\,\,\,{y} = 1
+IN	a \,\,\, b	a \,\,\, b
+IN	{f} \,\,\, \to \,\,\, {g} \,\,\, \to \,\,\, {h}	{f} \\\to\,  {g} \\\to\,  {h}
+IN	\dfrac{a}{b}\,\,\,x	\dfrac{a}{b}\,\,\,x
+IN	{A}\,\, \Leftrightarrow \,\,\,\, {B}\,\,\,\,\, \Leftrightarrow \,\, {C}	{A}\\\Leftrightarrow\,  {B}\\\Leftrightarrow\,  {C}
+IN	1 + 2 = 3	1 + 2 = 3

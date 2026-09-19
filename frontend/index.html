@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math100 Generator</title>
+    <link rel="stylesheet" href="qrc:/css/style.css">
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)']],
+                displayMath: [['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                // task-12b: mjx-container — не заглядывать внутрь готового
+                // вывода MathJax (повторный typeset не должен трогать
+                // уже отрендеренные формулы)
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'mjx-container'],
+                html: {
+                    linkColors: {
+                        link: '#1a73e8'
+                    },
+                    handleFragments: ['copy', 'selection', 'annotation']
+                }
+            },
+            startup: {
+                ready: function() {
+                    MathJax.startup.defaultReady();
+                    MathJax.startup.promise.then(function() {
+                        document.dispatchEvent(new Event('mathjax-ready'));
+                    });
+                }
+            }
+        };
+    </script>
+    <!-- task-12b: tex-chtml (без MML-input): повторный typesetPromise
+         (гонка auto-typeset vs renderMathJax) с build'ом tex-mml-chtml
+         повторно тайпсетил <math> из assistive-mml собственного вывода
+         MathJax — каждая формула дублировалась в DOM. Контент math100.ru
+         не содержит нативного MathML, MML-input не нужен. -->
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
+</head>
+<body>
+    <div id="task-content">
+    </div>
+    <script src="qrc:/js/app.js"></script>
+</body>
+</html>

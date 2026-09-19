@@ -1,0 +1,55 @@
+# Build directories
+build/
+cmake-build-*/
+*.sdf
+*.suo
+*.user
+*.vsconfig
+*.vcxproj.*
+
+# Qt
+Qt/
+*.qrc.cache
+
+# Cache (кэш приложения: pages/images; .gitkeep оставляем в git)
+cache/*
+!cache/.gitkeep
+
+# Runtime caches (рядом с exe / в корне)
+images_cache/
+latex_cache/
+console/out/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vs/
+.idea/
+*.swp
+*.swo
+*~
+
+# Packaging / AppImage artifacts
+dist/
+squashfs-root/
+*.zip
+*.appimage
+*.AppImage
+
+# Logs
+*.log
+debug.log
+.rebuild_*.log
+
+# Agent events (журналы событий агентов)
+.agent-events/
+
+# PDF — артефакты тестов/экспорта (приложение генерирует их само)
+*.pdf

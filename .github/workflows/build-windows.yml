@@ -1,0 +1,67 @@
+# Сборка Qt6-приложения math100_generator для Windows 11 x64 на GitHub Actions.
+# Итог — zip-артефакт с exe + Qt-зависимостями (включая QtWebEngine, ~400–700 МБ).
+name: Build Windows (Win11 x64)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: # позволяет запускать сборку вручную из UI GitHub
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      # 1. Выкачиваем исходники репозитория.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Ставим aqtinstall — инструмент для установки официального Qt на раннер.
+      - name: Install aqtinstall
+        run: pip install aqtinstall
+
+      # 3. Устанавливаем Qt 6.8.2 (MSVC 2019 build, совместим с VS2022 на раннере)
+      #    + модуль QtWebEngine в C:\qt. Качаем с download.qt.io (доступно с раннеров).
+      - name: Install Qt 6.8.2 (win64_msvc2019_64) + WebEngine
+        run: aqt install-qt windows desktop 6.8.2 win64_msvc2019_64 -O C:\qt -m qtwebengine
+
+      # 4. Конфигурируем CMake: генератор Ninja (есть из коробки),
+      #    тип сборки Release, путь к Qt через CMAKE_PREFIX_PATH.
+      - name: Configure CMake
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/qt
+
+      # 5. Собираем все цели (math100_generator и mathsplit_test).
+      - name: Build
+        run: cmake --build build --parallel
+
+      # 6. Запускаем unit-тест mathsplit_test.
+      #    Тест ищет фикстуры по относительному пути ../tests/testdata/mathsplit_cases.txt,
+      #    поэтому cwd = build. Успех = exit 0 и сообщение "ALL PASS".
+      - name: Run unit tests (mathsplit_test)
+        working-directory: build
+        run: mathsplit_test.exe
+
+      # 7. Деплой Qt-зависимостей рядом с exe (windeployqt из C:\qt\bin).
+      #    --compiler-runtime: копирует MSVC-рантайм, пользователю не нужен VC++ Redistributable.
+      #    --no-translations: переводы Qt не нужны, экономит ~50 МБ.
+      #    dist\cache приложение создаёт само при старте — создавать его здесь не нужно.
+      #    WebEngine (QtWebEngineProcess.exe + ресурсы Chromium) копируется windeployqt автоматически.
+      - name: Deploy Qt dependencies (windeployqt)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item build\math100_generator.exe dist\
+          & "C:\qt\bin\windeployqt.exe" --compiler-runtime --no-translations dist\math100_generator.exe
+
+      # 8. Архивируем готовую папку dist в zip.
+      - name: Create zip archive
+        run: Compress-Archive -Path dist -DestinationPath math100_generator_win64.zip
+
+      # 9. Загружаем zip как артефакт (хранение 7 дней).
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: math100_generator_win64
+          path: math100_generator_win64.zip
+          retention-in-days: 7

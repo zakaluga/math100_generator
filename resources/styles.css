@@ -1,0 +1,36 @@
+/* Дополнительные стили для PDF */
+
+/* Стили для каждого задания в PDF */
+.pdf-task {
+    page-break-before: always;
+    margin-bottom: 20mm;
+}
+
+.pdf-task:first-child {
+    page-break-before: auto;
+}
+
+/* Заголовок задачи в PDF */
+.pdf-task .task-header {
+    font-family: Arial, sans-serif;
+    font-size: 14pt;
+    font-weight: bold;
+    margin-bottom: 10px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #ccc;
+}
+
+/* Стили для формул в PDF */
+.pdf-task .math-formula {
+    text-align: center;
+    margin: 10px 0;
+    font-size: 11pt;
+}
+
+/* Изображения в PDF */
+.pdf-task img {
+    max-width: 85mm;
+    height: auto;
+    display: block;
+    margin: 8px auto;
+}
