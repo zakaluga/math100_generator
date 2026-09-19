@@ -29,23 +29,29 @@ namespace {
 // этой сборки Qt), поэтому поллим простой (не-promise) выражение каждые
 // 500ms, а не MathJax.startup.promise. Пустой результат не останавливает
 // poll — сработает backstop.
+// task-15b: всё состояние (loop/done/pollCount/статус) — в куче с родителем
+// page. Отложенный callback runJavaScript (рендерер занят typeset'ом) может
+// прийти ПОСЛЕ выхода из loop.exec() — с локальными переменными стека это
+// use-after-free (кандидат на краш Windows). Пока page жива, st жива
+// (дети QObject уничтожаются после тела ~QWebEnginePage, т.е. даже во время
+// teardown WebEngineCore st ещё валидна); после удаления страницы новых
+// callback'ов по странице не будет.
 QString waitMathJaxReady(QWebEnginePage *page, int timeoutMs)
 {
-    QString mjStatus;
-    QEventLoop loop;
-    bool done = false;
-    auto finish = [&loop, &done, &mjStatus](const QString &status) {
-        if (done) {
-            return;
-        }
-        done = true;
-        mjStatus = status;
-        loop.quit();
+    struct WaitState : public QObject {
+        QEventLoop loop;
+        bool done = false;
+        int pollCount = 0;
+        QString status;
+        explicit WaitState(QObject *parent) : QObject(parent) {}
     };
-    auto *poll = new QTimer(&loop);
-    int pollCount = 0; // task-12c DEBUG (временное)
-    QObject::connect(poll, &QTimer::timeout, &loop, [page, poll, finish, &pollCount]() {
-        ++pollCount;
+    auto *st = new WaitState(page);
+    // URL берём ДО loop.exec(): callback может сработать во время
+    // уничтожения страницы, а обращаться к page внутри него небезопасно.
+    const QString urlStr = page->url().toString();
+    auto *poll = new QTimer(st);
+    QObject::connect(poll, &QTimer::timeout, st, [page, poll, st, urlStr]() {
+        ++st->pollCount;
         page->runJavaScript(R"(
             (function(){
                 try {
@@ -77,10 +83,10 @@ QString waitMathJaxReady(QWebEnginePage *page, int timeoutMs)
                     return 'pending';
                 }
             })()
-        )", [page, poll, finish, &pollCount](const QVariant &res) {
+        )", [st, poll, urlStr](const QVariant &res) {
             // task-12c DEBUG (временное)
             qInfo().noquote() << QString("[MJWAIT] poll#%1: res=\"%2\" url=%3")
-                .arg(pollCount).arg(res.toString()).arg(page->url().toString());
+                .arg(st->pollCount).arg(res.toString()).arg(urlStr);
             if (!res.isValid() || res.toString().isEmpty()) {
                 // Пустой результат (артефакт сборки) — не останавливаем poll,
                 // сработает backstop-таймаут.
@@ -88,53 +94,78 @@ QString waitMathJaxReady(QWebEnginePage *page, int timeoutMs)
             }
             const QString status = res.toString();
             if (status == "ready" || status == "absent") {
+                if (st->done) {
+                    return;
+                }
                 poll->stop();
-                finish(status);
+                st->done = true;
+                st->status = status;
+                st->loop.quit();
             }
         });
     });
-    QTimer::singleShot(timeoutMs, &loop, [finish] { finish("timeout"); });
+    QTimer::singleShot(timeoutMs, st, [st] {
+        if (!st->done) {
+            st->done = true;
+            st->status = QStringLiteral("timeout");
+            st->loop.quit();
+        }
+    });
     poll->start(500);
-    loop.exec();
-    return mjStatus;
+    st->loop.exec();
+    return st->status;
 }
 
 // Асинхронный printToPdf (Qt 6.8) через callback-перегрузку + локальный
 // event loop; backstop-таймаут. Возвращает true, если callback пришёл.
+// task-15b: состояние (done/loop/таймер) — в куче с родителем page.
+// Документация Qt: callback printToPdf ВСЕГДА вызывается, в т.ч. при
+// уничтожении страницы (с пустым значением). С переменными в стеке
+// (done/pdfData/loop — кадры уже завершившихся функций) это
+// use-after-free: backstop -> print остаётся in-flight -> deleteLater
+// страницы -> callback на мёртвый стек. Теперь callback проверяет
+// st->done (куча, живёт вместе со страницей) и не трогает pdfData,
+// если вызов уже не актуален.
 bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs)
 {
-    QEventLoop loop;
-    bool done = false;
-    QTimer backstop;
-    backstop.setSingleShot(true);
-    QObject::connect(&backstop, &QTimer::timeout, &loop, [&loop, &done] {
-        if (!done) {
-            done = true;
-            loop.quit();
+    struct WaitState : public QObject {
+        QEventLoop loop;
+        bool done = false;
+        QElapsedTimer dbgT;
+        explicit WaitState(QObject *parent) : QObject(parent) {}
+    };
+    auto *st = new WaitState(page);
+    QTimer *backstop = new QTimer(st);
+    backstop->setSingleShot(true);
+    QObject::connect(backstop, &QTimer::timeout, st, [st] {
+        if (!st->done) {
+            st->done = true;
+            st->loop.quit();
         }
     });
-    backstop.start(timeoutMs);
+    backstop->start(timeoutMs);
     // task-12c-fix DEBUG (временное)
-    QElapsedTimer dbgT;
-    dbgT.start();
+    st->dbgT.start();
     qInfo().noquote() << "[PDFDBG] printToPdf: request issued url=" << page->url().toString();
 
-    page->printToPdf([&pdfData, &loop, &done, &dbgT](const QByteArray &data) {
-        if (done) {
+    page->printToPdf([st, &pdfData](const QByteArray &data) {
+        if (st->done) {
+            // Backstop уже сработал (callback принят ранее) — pdfData живёт
+            // в стеке вызывающего, который мог уже завершиться. Не трогаем.
             return;
         }
         qInfo().noquote() << "[PDFDBG] printToPdf: callback data=" << data.size()
-                          << "bytes after" << dbgT.elapsed() << "ms";
-        done = true;
+                          << "bytes after" << st->dbgT.elapsed() << "ms";
+        st->done = true;
         pdfData = data;
-        loop.quit();
+        st->loop.quit();
     });
-    loop.exec();
-    if (!done) {
-        qInfo().noquote() << "[PDFDBG] printToPdf: BACKSTOP fired after" << dbgT.elapsed()
+    st->loop.exec();
+    if (!st->done) {
+        qInfo().noquote() << "[PDFDBG] printToPdf: BACKSTOP fired after" << st->dbgT.elapsed()
                           << "ms (callback не пришёл)";
     }
-    return done;
+    return st->done;
 }
 
 // task-12: подгонка широких формул ПЕРЕД печатью. Выполняет на странице
@@ -142,30 +173,38 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs)
 // экспорт-документы; window.__mathFitted сбрасывается на всякий случай)
 // и ЖДЁТ callback runJavaScript (backstop 5s — сбой fit не останавливает
 // печать), а printToPdf вызывается ВНУТРИ этого callback.
+// task-15b: состояние (started/loop/таймер) — в куче с родителем page:
+// отложенный callback runJavaScript может прийти после выхода из
+// loop.exec() (когда backstop уже сработал) — с локальным `started`
+// в стеке это use-after-free.
 void printAfterFit(QWebEnginePage *page, QByteArray &pdfData)
 {
-    QEventLoop loop;
-    bool started = false;
-    QElapsedTimer dbgFitT;
-    dbgFitT.start();
-    auto doPrint = [&page, &pdfData, &loop, &started, &dbgFitT](auto &&...) {
-        if (started) {
+    struct FitState : public QObject {
+        QEventLoop loop;
+        bool started = false;
+        QElapsedTimer dbgFitT;
+        explicit FitState(QObject *parent) : QObject(parent) {}
+    };
+    auto *st = new FitState(page);
+    st->dbgFitT.start();
+    auto doPrint = [page, &pdfData, st](auto &&...) {
+        if (st->started) {
             return;
         }
         qInfo().noquote() << "[PDFDBG] printAfterFit: fit-callback path, elapsed="
-                          << dbgFitT.elapsed() << "ms";
-        started = true;
+                          << st->dbgFitT.elapsed() << "ms";
+        st->started = true;
         waitForPrintToPdf(page, pdfData, 30000);
-        loop.quit();
+        st->loop.quit();
     };
-    QTimer backstop;
-    backstop.setSingleShot(true);
-    QObject::connect(&backstop, &QTimer::timeout, &loop, doPrint);
-    backstop.start(5000);
+    QTimer *backstop = new QTimer(st);
+    backstop->setSingleShot(true);
+    QObject::connect(backstop, &QTimer::timeout, st, doPrint);
+    backstop->start(5000);
     page->runJavaScript(
         "window.__mathFitted=false; if (window.fitWideMath) window.fitWideMath(); 'ok'",
         doPrint);
-    loop.exec();
+    st->loop.exec();
 }
 
 // Запись готовых байтов PDF в файл. false + *errorOut при ошибке.
@@ -394,10 +433,14 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
 
     // Отдельная временная страница: отображаемую m_page (видимый view с
     // текущей задачей) не трогаем. Профиль общий (defaultProfile через
-    // m_page) — кэш/cookies те же, что у приложения. Родителя нет:
-    // после printToPdf делаем deleteLater.
+    // m_page) — кэш/cookies те же, что у приложения.
+    // task-15b: родитель = this (страница-сирота не остаётся в памяти
+    // при сбое) и удаление — НЕ сразу после print, а после loadFinished
+    // + grace (блок "cleanup" ниже): уничтожение страницы с in-flight
+    // load/print роняет Chromium, а callback printToPdf при этом
+    // гарантированно срабатывает (docs Qt) — на мёртвый стек.
     QWebEngineProfile *profile = m_page ? m_page->profile() : QWebEngineProfile::defaultProfile();
-    auto *page = new QWebEnginePage(profile);
+    auto *page = new QWebEnginePage(profile, this);
     // База about:blank допустима: скрипты/стили в документе экспорта —
     // абсолютные (CDN). loadFinished покрывается тем же poll (readyState).
     page->setHtml(fullHtml, QUrl("about:blank"));
@@ -428,7 +471,27 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
         emit statusChanged(tr("PDF пуст, повторная попытка..."));
         printAfterFit(page, pdfData);
     }
-    page->deleteLater(); // страница больше не нужна
+    // task-15b: удаление страницы — только когда (1) load завершён и
+    // (2) прошёл grace 3с после print (внутренние операции Chromium,
+    // включая висящий printToPdf после backstop, доведены до конца).
+    // QTimer привязан к page: если страница/хост умрут раньше — таймер
+    // умрёт с ними и lambda не сработает (нет UAF). Если load так и не
+    // завершился (зависший рендерер), страница живёт до уничтожения
+    // WebEngineHost (родитель this) — ограниченная память, не утечка.
+    auto schedulePageCleanup = [page]() {
+        QTimer::singleShot(3000, page, [page] {
+            qInfo() << "[PDF] временная страница экспорта удалена (load ok, grace 3s)";
+            page->deleteLater();
+        });
+    };
+    if (page->isLoading()) {
+        // Load ещё идёт (например, MathJax-таймаут: документ не догрузился).
+        QObject::connect(page, &QWebEnginePage::loadFinished, page,
+                         [schedulePageCleanup]() { schedulePageCleanup(); },
+                         Qt::SingleShotConnection);
+    } else {
+        schedulePageCleanup();
+    }
 
     if (pdfData.isEmpty()) {
         qWarning() << "[PDF] printToPdf вернул пустой результат (таймаут или сбой рендеринга)";
