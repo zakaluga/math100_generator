@@ -32,22 +32,25 @@ jobs:
       - name: Install latest available Qt 6.x + WebEngine
         shell: powershell
         run: |
-          # ВАЖНО (опыт ранов 35433391113 / 35434068943):
-          # 1) На раннере WindowsPowerShell 5.1, и GitHub Actions ставит
-          #    $ErrorActionPreference=Stop — ЛЮБОЙ stderr нативной команды
-          #    (aqt пишет логи в stderr) становится terminating error и убивает
-          #    шаг, даже с 2>$null. Поэтому ВСЕ aqt-вызовы обернуты в cmd /c
-          #    (stderr сливается в вывод и не убивает скрипт).
-          # 2) Версию Qt не пишем жёстко: онлайн-репо Qt убирает старые версии
-          #    (6.8.2 исчез — aqt «packages not found»), и метаданные самых
-          #    свежих версий бывают биты («Failed to download checksum»).
-          #    Зондируем версии по одной (свежие сверху), берём первую, где
-          #    видна msvc-архитектура; предпочтения: 6.x, потом 7.x.
+          # IMPORTANT (lessons from runs 35433391113 / 35434068943):
+          # 1) The runner uses WindowsPowerShell 5.1 and GitHub Actions sets
+          #    $ErrorActionPreference=Stop - ANY stderr from a native command
+          #    (aqt logs to stderr) becomes a terminating error and kills the
+          #    step, even with 2>$null. Therefore ALL aqt calls below are
+          #    wrapped in cmd /c (stderr merged into output, no killing).
+          # 2) Version is NOT hard-coded: the Qt online repo drops old versions
+          #    (6.8.2 disappeared -> aqt "packages not found"), and metadata of
+          #    the newest versions is sometimes broken ("Failed to download
+          #    checksum"). We probe versions one by one (newest first) and take
+          #    the first one exposing an msvc architecture (6.x preferred, then 7.x).
+          # 3) ALL strings below are ASCII on purpose: WindowsPowerShell 5.1
+          #    reads generated .ps1 as ANSI (no BOM) and any non-ASCII byte
+          #    breaks the parser (run 35434251583: "string is missing the terminator").
           $versRaw = cmd /c "aqt list-qt windows desktop 2>&1" | Out-String
           $vers = $versRaw -split '\s+' |
                   Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
                   Sort-Object { [version]$_ } -Unique -Descending
-          Write-Host "Доступные версии: $($vers -join ', ')"
+          Write-Host "Available versions: $($vers -join ', ')"
           $cands = @()
           foreach ($v in $vers) {
             $major = [int]([regex]::Match($v, '^(\d+)\.').Groups[1].Value)
@@ -58,20 +61,22 @@ jobs:
             elseif ($arches -match 'win64_msvc2022_64') { $arch = 'win64_msvc2022_64' }
             if ($arch) {
               $cands += [pscustomobject]@{ Ver = $v; Arch = $arch }
-              Write-Host "Кандидат: $v / $arch"
+              Write-Host "Candidate: $v / $arch"
             } else {
-              Write-Host "Пропускаю $v (нет msvc-архитектуры). aqt ответил: $($arches.Trim().Substring(0, [Math]::Min(300, $arches.Trim().Length)))"
+              $short = $arches.Trim()
+              if ($short.Length -gt 300) { $short = $short.Substring(0, 300) }
+              Write-Host "Skip $v (no msvc arch). aqt said: $short"
             }
-            if ($cands.Count -ge 5) { break }  # не больше 5 зондов — экономим время
+            if ($cands.Count -ge 5) { break }  # max 5 probes
           }
           if ($cands.Count -eq 0) {
-            Write-Host "Подходящий Qt (>=6, msvc) в онлайн-репозитории не найден. aqt list-qt вывел:"
+            Write-Host "No suitable Qt (>=6, msvc) found in the online repo. aqt list-qt said:"
             Write-Host $versRaw
             exit 1
           }
           $pick = @($cands | Where-Object { $_.Ver -like '6.*' }) | Select-Object -First 1
-          if (-not $pick) { $pick = $cands[0]; Write-Host "WARNING: 6.x нет, берём $($pick.Ver)" }
-          Write-Host "=== Устанавливаю Qt $($pick.Ver) / $($pick.Arch) + qtwebengine ==="
+          if (-not $pick) { $pick = $cands[0]; Write-Host "WARNING: no 6.x available, taking $($pick.Ver)" }
+          Write-Host "=== Installing Qt $($pick.Ver) / $($pick.Arch) + qtwebengine ==="
           $installLog = cmd /c "aqt install-qt windows desktop $($pick.Ver) $($pick.Arch) -O C:\qt -m qtwebengine 2>&1" | Out-String
           Write-Host $installLog
           exit $LASTEXITCODE
