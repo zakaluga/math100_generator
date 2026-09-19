@@ -15,6 +15,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QScopeGuard>
+#include <functional>
 
 namespace {
 
@@ -119,14 +120,17 @@ QString waitMathJaxReady(QWebEnginePage *page, int timeoutMs)
 // Асинхронный printToPdf (Qt 6.8) через callback-перегрузку + локальный
 // event loop; backstop-таймаут. Возвращает true, если callback пришёл.
 // task-15b: состояние (done/loop/таймер) — в куче с родителем page.
-// Документация Qt: callback printToPdf ВСЕГДА вызывается, в т.ч. при
-// уничтожении страницы (с пустым значением). С переменными в стеке
-// (done/pdfData/loop — кадры уже завершившихся функций) это
-// use-after-free: backstop -> print остаётся in-flight -> deleteLater
-// страницы -> callback на мёртвый стек. Теперь callback проверяет
-// st->done (куча, живёт вместе со страницей) и не трогает pdfData,
-// если вызов уже не актуален.
-bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs)
+// task-17: ВАЖНО про Qt 6.10 (проверено по исходникам v6.10.3, qwebenginepage.cpp):
+// обёртка публичного callback'а — `if (resultCallback && result) resultCallback(*result);`
+// — ВСЕ пути сбоя печати (NavigationStopped, RenderProcessGone, отклонённый
+// повторный запрос, PrintToPDFInternal==false) подают callback с NULL-
+// QSharedPointer, и обёртка его МОЛЧА СКИДЫВАЕТ: пользовательский callback
+// НЕ вызывается НИКОГДА. Поэтому «callback не пришёл» нельзя отличить от
+// «печатает долго» — единственный ориентир: backstop + heartbeat onTick.
+// task-15b (дальше): callback проверяет st->done и не трогает pdfData,
+// если вызов уже не актуален (нет UAF по мёртвому стеку).
+bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs,
+                       const std::function<void(int)> &onTick = nullptr)
 {
     struct WaitState : public QObject {
         QEventLoop loop;
@@ -144,6 +148,16 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs)
         }
     });
     backstop->start(timeoutMs);
+    // task-17: heartbeat каждые 15с — видно в логе и статус-баре, что
+    // печать ещё идёт (на медленных машинах 20-30 страниц с MathJax
+    // реально могут печататься дольше прежнего 30с backstop).
+    if (onTick) {
+        auto *tick = new QTimer(st);
+        QObject::connect(tick, &QTimer::timeout, st, [st, onTick] {
+            onTick(st->dbgT.elapsed() / 1000);
+        });
+        tick->start(15000);
+    }
     // task-12c-fix DEBUG (временное)
     st->dbgT.start();
     qInfo().noquote() << "[PDFDBG] printToPdf: request issued url=" << page->url().toString();
@@ -177,7 +191,10 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs)
 // отложенный callback runJavaScript может прийти после выхода из
 // loop.exec() (когда backstop уже сработал) — с локальным `started`
 // в стеке это use-after-free.
-void printAfterFit(QWebEnginePage *page, QByteArray &pdfData)
+// task-17: printTimeoutMs — backstop печати (по умолчанию 30с; экспортный
+// путь передаёт 300с — см. task-17 в printHtmlToPdf), onTick — heartbeat.
+void printAfterFit(QWebEnginePage *page, QByteArray &pdfData, int printTimeoutMs = 30000,
+                   const std::function<void(int)> &onTick = nullptr)
 {
     struct FitState : public QObject {
         QEventLoop loop;
@@ -187,14 +204,14 @@ void printAfterFit(QWebEnginePage *page, QByteArray &pdfData)
     };
     auto *st = new FitState(page);
     st->dbgFitT.start();
-    auto doPrint = [page, &pdfData, st](auto &&...) {
+    auto doPrint = [page, &pdfData, st, printTimeoutMs, onTick](auto &&...) {
         if (st->started) {
             return;
         }
         qInfo().noquote() << "[PDFDBG] printAfterFit: fit-callback path, elapsed="
                           << st->dbgFitT.elapsed() << "ms";
         st->started = true;
-        waitForPrintToPdf(page, pdfData, 30000);
+        waitForPrintToPdf(page, pdfData, printTimeoutMs, onTick);
         st->loop.quit();
     };
     QTimer *backstop = new QTimer(st);
@@ -386,18 +403,19 @@ bool WebEngineHost::printPdfTo(const QString &filePath)
     //    подгонку широких display-формул (window.fitWideMath) и ждём её
     //    callback; сам printToPdf вызывается внутри этого callback
     //    (Qt 6.8: асинхронный, callback + локальный event loop,
-    //    страховка-таймаут 30s).
+    //    страховка-таймаут). task-17: 120с (было 30с) — на медленных
+    //    Windows-машинах печать одной задачи с MathJax тоже может тянуться.
     emit statusChanged(tr("Создание PDF..."));
 
     QByteArray pdfData;
-    printAfterFit(m_page, pdfData);
+    printAfterFit(m_page, pdfData, 120000);
 
     // task-12c: страховка от мигания Chromium — пустой результат первой
     // попытки повторяем ОДИН раз, прежде чем объявлять ошибку.
     if (pdfData.isEmpty()) {
         qWarning() << "[PDF] первая попытка пуста — retry printToPdf";
         emit statusChanged(tr("PDF пуст, повторная попытка..."));
-        printAfterFit(m_page, pdfData);
+        printAfterFit(m_page, pdfData, 120000);
     }
 
     if (pdfData.isEmpty()) {
@@ -474,44 +492,30 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
 
     // 2) Генерация PDF: task-12 — сначала fitWideMath (callback), потом
     //    printToPdf внутри callback (та же механика, что в printPdfTo).
-    // task-16a: до 3 попыток с эскалацией видимости view — print-конвейер
-    // Chromium на Windows может не инициализироваться, пока view не стал
-    // «видимым» (в разных смыслах): попытка 1 — WA_DontShowOnScreen
-    // (видим для layout/рендера, без окна), попытка 2 — невидимое
-    // tool-окно за экраном, попытка 3 — реально видимое окно (крайний
-    // случай, пользователь видит процесс). Страница между попытками НЕ
-    // пересоздаётся: MathJax уже typeset'нут, setHtml выше — один раз.
+    // task-17: ОДНА попытка, окно ВИДИМО СРАЗУ (эскалация task-16a не
+    // помогла: даже видимое окно не спасало — callback не приходил и там).
+    // Настоящие причины (лог пользователя + исходники Qt 6.10.3):
+    //   (a) «медленная» печать: 20-30 страниц с MathJax-CHTML на слабых
+    //       машинах реально печатаются >30с — прежний backstop резал
+    //       нормальную печать; теперь 300с + heartbeat каждые 15с;
+    //   (b) Qt 6.10 молча скидывает callback при ЛЮБОМ сбое печати (NULL-
+    //       result в обёртке qwebenginepage.cpp) — отличить «медленно» от
+    //       «сбой» по callback нельзя, поэтому main.cpp включает
+    //       --disable-gpu (software-растеризация print-пайплайна — known
+    //       fix для зависающего Chromium-принта на Windows).
+    // Страница пересоздаётся один раз, MathJax уже typeset'нут.
+    view->show();
+    qInfo().noquote() << "[PDFDBG] print started: window=visible, timeout=300s";
     emit statusChanged(tr("Создание PDF..."));
     QByteArray pdfData;
-    const struct { const char *mode; const char *status; } kAttemptModes[] = {
-        {"dontshow",  "Создание PDF (попытка 1: offscreen-видимость)..."},
-        {"offscreen", "PDF пуст, повтор (попытка 2: окно за экраном)..."},
-        {"visible",   "PDF пуст, повтор (попытка 3: окно видно)..."},
+    auto onTick = [this](int sec) {
+        qInfo().noquote() << "[PDFDBG] printToPdf: ещё печатается..." << sec << "s";
+        emit statusChanged(tr("Создание PDF... (%1 с)").arg(sec));
     };
-    for (int attempt = 0; attempt < 3; ++attempt) {
-        if (attempt == 0) {
-            view->setAttribute(Qt::WA_DontShowOnScreen, true);
-        } else if (attempt == 1) {
-            // Неудача «чистого» offscreen — даём view настоящее (но
-            // вынесенное за экран) окно: на Windows именно show()
-            // инициализирует нативное окно + print-конвейер.
-            view->setAttribute(Qt::WA_DontShowOnScreen, false);
-            view->move(-4000, -4000);
-        } else {
-            // Крайний случай: окно реально видно (tool-окно, без записи
-            // в taskbar). Пользователь видит процесс формирования PDF.
-            view->move(0, 0);
-        }
-        view->show();
-        qInfo().noquote() << "[PDFDBG] attempt" << (attempt + 1) << ": window="
-                          << kAttemptModes[attempt].mode;
-        emit statusChanged(tr(kAttemptModes[attempt].status));
-        printAfterFit(page, pdfData);
-        if (!pdfData.isEmpty()) {
-            break;
-        }
-        qWarning() << "[PDF] попытка" << (attempt + 1) << "(window="
-                   << kAttemptModes[attempt].mode << ") пуста — следующая";
+    printAfterFit(page, pdfData, 300000, onTick);
+    if (pdfData.isEmpty()) {
+        qWarning() << "[PDF] printToPdf пуст после 300s — см. [PDFDBG] heartbeat "
+                   << "в логе: если тикал до 300s — печать зависла (драйвер/GPU/Chromium)";
     }
     // task-16a (расширен task-15b): удаление — только когда (1) load
     // завершён и (2) прошёл grace 3с после print (внутренние операции

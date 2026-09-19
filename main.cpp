@@ -147,6 +147,13 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext &context, const
 
 int main(int argc, char *argv[])
 {
+    // task-17: Chromium print-пайплайн на Windows зависает с GPU-растеризацией
+    // (printToPdf callback не приходит никогда, даже на видимом view — лог
+    // пользователя 17:06-17:09, все 3 эскалации пусты). Software-растеризация
+    // стабильна для печати; для этого приложения (статичный контент) цена
+    // --disable-gpu пренебрежима. Убираем флаг, когда найдем корень точно.
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu");
+
     // Устанавливаем ДО создания QApplication, чтобы не потерять сообщения,
     // появляющиеся ещё на этапе инициализации.
     qInstallMessageHandler(fileMessageHandler);
