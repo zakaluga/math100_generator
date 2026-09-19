@@ -151,14 +151,14 @@ jobs:
           & "${{ steps.qtinstall.outputs.qt_root }}\bin\windeployqt.exe" --compiler-runtime --no-translations dist\math100_generator.exe
           exit $LASTEXITCODE
 
-      # 8. Архивируем готовую папку dist в zip.
-      - name: Create zip archive
-        run: Compress-Archive -Path dist -DestinationPath math100_generator_win64.zip
-
-      # 9. Загружаем zip как артефакт (хранение 7 дней).
+      # 8. Загружаем папку dist артефактом (хранение 7 дней).
+      #    ВАЖНО: actions/upload-artifact САМ сжимает загружаемые файлы в zip —
+      #    дополнительный Compress-Archive давал ДВОЙНОЙ архив (zip внутри zip).
+      #    Теперь: скачанный артефакт = один zip, внутри сразу exe + Qt-DLL +
+      #    плагины (содержимое dist/ в корне).
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: math100_generator_win64
-          path: math100_generator_win64.zip
+          path: dist
           retention-in-days: 7
