@@ -21,13 +21,9 @@ public:
 
     QWebEngineView *view() const { return m_view; }
     void loadTaskPage(const QString &html, const QString &taskUrl);
-    void triggerPrint();
-    // Генерирует PDF текущей страницы (C++-сторона, QtWebEngine printToPdf).
-    // Синхронно: ждёт готовности MathJax (таймаут ~10s), затем ПЕРЕД печатью
-    // выполняет window.fitWideMath() (подгонка широких display-формул,
-    // task-12) и ждёт её callback (backstop 5s); printToPdf вызывается внутри
-    // этого callback (таймаут 30s). Возвращает true, если файл успешно записан.
-    bool printPdfTo(const QString &filePath);
+    // task-21: triggerPrint/printPdfTo («Скачать PDF» одной задачи) удалены —
+    // рудимент: функцию полностью покрывает «Экспорт PDF…» (одна/несколько
+    // задач, ответы/решения, таблица/страницы) через printHtmlToPdf.
     // Генерирует PDF из готового самодостаточного HTML-документа (экспорт).
     // task-18: печатает на ОСНОВНОЙ m_page (её рендер-пайплайн живой —
     // пользователь видит превью), а НЕ на временной странице: временная

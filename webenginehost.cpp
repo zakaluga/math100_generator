@@ -8,9 +8,6 @@
 #include <QElapsedTimer>
 #include <QDebug>
 #include <QJsonDocument>
-#include <QFileDialog>
-#include <QStandardPaths>
-#include <QDir>
 #include <QFile>
 #include <QEventLoop>
 #include <QTimer>
@@ -383,117 +380,6 @@ void WebEngineHost::loadTaskPage(const QString &html, const QString &taskUrl)
     // Загружаем с base URL
     QUrl baseUrl{taskUrl};
     m_page->setContent(fullHtml.toUtf8(), "text/html", baseUrl);
-}
-
-void WebEngineHost::triggerPrint()
-{
-    if (!m_page) {
-        return;
-    }
-
-    // Имя файла по умолчанию: последний сегмент пути URL задачи + ".pdf"
-    // (напр. https://math100.ru/ege_profil_8_1-3/ -> ege_profil_8_1-3.pdf)
-    QString base = "task";
-    const QStringList segments = QUrl(m_currentTaskUrl).path().split('/', Qt::SkipEmptyParts);
-    if (!segments.isEmpty()) {
-        const QString last = segments.last().simplified();
-        if (!last.isEmpty()) {
-            base = last;
-        }
-    }
-
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    if (dir.isEmpty()) {
-        dir = QDir::homePath();
-    }
-    QDir().mkpath(dir);
-
-    QWidget *parent = m_view ? m_view->window() : nullptr;
-    QString path = QFileDialog::getSaveFileName(
-        parent,
-        tr("Сохранить PDF"),
-        dir + '/' + base + ".pdf",
-        tr("PDF-файлы (*.pdf)"));
-
-    if (path.isEmpty()) {
-        // Пользователь отменил выбор — просто выходим без ошибок
-        return;
-    }
-    if (!path.endsWith(".pdf", Qt::CaseInsensitive)) {
-        path += ".pdf";
-    }
-
-    const bool ok = printPdfTo(path);
-    if (ok) {
-        emit statusChanged(tr("PDF сохранён: %1").arg(path));
-    } else {
-        emit statusChanged(tr("Ошибка создания PDF"));
-    }
-}
-
-bool WebEngineHost::printPdfTo(const QString &filePath)
-{
-    if (!m_page) {
-        qWarning() << "[PDF] printPdfTo: страница не инициализирована";
-        return false;
-    }
-    if (m_pdfBusy) {
-        qWarning() << "[PDF] printPdfTo: предыдущий запрос ещё выполняется";
-        emit statusChanged(tr("PDF уже создаётся, повторите позже"));
-        return false;
-    }
-    m_pdfBusy = true;
-    const QScopeGuard busyGuard{[this] { m_pdfBusy = false; }};
-
-    // 1) Ждём готовности MathJax: иначе в PDF попадут неотрисованные формулы.
-    //    (Poll простыми JS-выражениями, backstop 10s — см. waitMathJaxReady.)
-    emit statusChanged(tr("Ожидание готовности MathJax..."));
-
-    const QString mjStatus = waitMathJaxReady(m_page, 10000);
-
-    if (mjStatus == "timeout") {
-        qWarning() << "[PDF] MathJax: таймаут ожидания (10s) — продолжаем, "
-                   << "формулы могут быть неотрисованы";
-        emit statusChanged(tr("MathJax не готов (таймаут), продолжаем..."));
-    } else if (mjStatus == "absent") {
-        qWarning() << "[PDF] MathJax не обнаружен на странице (CDN недоступен?) — "
-                   << "формулы не отрисуются";
-    }
-
-    // 2) Генерация PDF. task-12: перед printToPdf принудительно повторяем
-    //    подгонку широких display-формул (window.fitWideMath) и ждём её
-    //    callback; printToPdf вызывается ПОСЛЕ callback (task-19f: печать
-    //    из JS-callback с вложенным loop вешала WebEngine IPC). task-17:
-    //    120с (было 30с) — на медленных Windows-машинах печать одной задачи
-    //    с MathJax тоже может тянуться.
-    emit statusChanged(tr("Создание PDF..."));
-
-    QByteArray pdfData;
-    printAfterFit(m_page, pdfData, 120000);
-
-    // task-12c: страховка от мигания Chromium — пустой результат первой
-    // попытки повторяем ОДИН раз, прежде чем объявлять ошибку.
-    if (pdfData.isEmpty()) {
-        qWarning() << "[PDF] первая попытка пуста — retry printToPdf";
-        emit statusChanged(tr("PDF пуст, повторная попытка..."));
-        printAfterFit(m_page, pdfData, 120000);
-    }
-
-    if (pdfData.isEmpty()) {
-        qWarning() << "[PDF] printToPdf вернул пустой результат (таймаут или сбой рендеринга)";
-        emit statusChanged(tr("Ошибка создания PDF"));
-        return false;
-    }
-
-    // 3) Запись файла
-    QString err;
-    if (!writePdfFile(pdfData, filePath, &err)) {
-        emit statusChanged(tr("Ошибка создания PDF: %1").arg(err));
-        return false;
-    }
-
-    qInfo() << "[PDF] PDF записан:" << qPrintable(filePath) << "(" << pdfData.size() << "байт)";
-    return true;
 }
 
 bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &filePath, int mathjaxWaitSec)

@@ -15,7 +15,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_urlEdit(new QLineEdit(this))
     , m_fetchButton(new QPushButton("Загрузить вариант", this))
-    , m_pdfButton(new QPushButton("Скачать PDF", this))
     , m_clearButton(new QPushButton("Очистить кэш", this))
     , m_exportButton(new QPushButton("Экспорт PDF…", this))
     , m_studentButton(new QPushButton("PDF: все задания (студент)", this))
@@ -37,7 +36,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_fetchButton, &QPushButton::clicked, this, &MainWindow::onFetchUrl);
     connect(m_taskList, &QListWidget::currentRowChanged, this, &MainWindow::onTaskSelected);
-    connect(m_pdfButton, &QPushButton::clicked, this, &MainWindow::onDownloadPDF);
     connect(m_clearButton, &QPushButton::clicked, this, &MainWindow::onClearCache);
     connect(m_exportButton, &QPushButton::clicked, this, &MainWindow::onExportDialog);
     connect(m_studentButton, &QPushButton::clicked, this, &MainWindow::onPresetStudent);
@@ -115,9 +113,10 @@ void MainWindow::setupUI()
 
     mainLayout->addLayout(middleLayout, 10);
 
-    // Bottom bar 1: PDF + clear buttons + status
+    // Bottom bar 1: clear button + status
+    // (task-21: кнопка «Скачать PDF» удалена — рудимент, функцию полностью
+    //  покрывает «Экспорт PDF…» с выбором одной задачи)
     auto *bottomLayout = new QHBoxLayout();
-    bottomLayout->addWidget(m_pdfButton);
     bottomLayout->addWidget(m_clearButton);
     bottomLayout->addStretch();
     bottomLayout->addWidget(m_statusLabel);
@@ -138,11 +137,6 @@ void MainWindow::setupUI()
     m_fetchButton->setStyleSheet(
         "QPushButton { padding: 6px 16px; font-weight: bold; background-color: #4CAF50; color: white; border: none; border-radius: 4px; }"
         "QPushButton:hover { background-color: #45a049; }"
-        "QPushButton:disabled { background-color: #cccccc; }"
-    );
-    m_pdfButton->setStyleSheet(
-        "QPushButton { padding: 6px 16px; font-weight: bold; background-color: #2196F3; color: white; border: none; border-radius: 4px; }"
-        "QPushButton:hover { background-color: #1976D2; }"
         "QPushButton:disabled { background-color: #cccccc; }"
     );
     m_clearButton->setStyleSheet(
@@ -213,13 +207,6 @@ void MainWindow::onTaskPageLoaded(const QString &html, const QString &url)
 {
     m_webEngine->loadTaskPage(html, url);
     updateStatus(QString("Задача %1 загружена").arg(m_currentTaskIndex + 1));
-}
-
-void MainWindow::onDownloadPDF()
-{
-    if (m_webEngine) {
-        m_webEngine->triggerPrint();
-    }
 }
 
 void MainWindow::onClearCache()
@@ -351,7 +338,6 @@ void MainWindow::disableUI(bool disabled)
     m_fetchButton->setEnabled(!disabled);
     m_urlEdit->setEnabled(!disabled);
     m_taskList->setEnabled(!disabled);
-    m_pdfButton->setEnabled(!disabled);
     m_exportButton->setEnabled(!disabled);
     m_studentButton->setEnabled(!disabled);
     m_teacherButton->setEnabled(!disabled);

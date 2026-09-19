@@ -30,7 +30,6 @@ private slots:
     void onFetchUrl();
     void onTaskSelected(int index);
     void onTaskPageLoaded(const QString &html, const QString &url);
-    void onDownloadPDF();
     void onClearCache();
     void onExportDialog();
     void onPresetStudent();
@@ -48,7 +47,6 @@ private:
     // UI controls
     QLineEdit *m_urlEdit;
     QPushButton *m_fetchButton;
-    QPushButton *m_pdfButton;
     QPushButton *m_clearButton;
     QPushButton *m_exportButton;
     QPushButton *m_studentButton;
