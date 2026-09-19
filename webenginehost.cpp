@@ -318,6 +318,9 @@ void WebEngineHost::loadTaskPage(const QString &html, const QString &taskUrl)
 
     // Создаём полный HTML-документ
     QString fullHtml = createFullHtml(html);
+    // task-18: запоминаем, чтобы вернуть после экспортной печати (см.
+    // printHtmlToPdf).
+    m_currentTaskHtml = fullHtml;
 
     // Загружаем с base URL
     QUrl baseUrl{taskUrl};
@@ -449,38 +452,26 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
     m_pdfBusy = true;
     const QScopeGuard busyGuard{[this] { m_pdfBusy = false; }};
 
-    // Отдельная временная страница: отображаемую m_page (видимый view с
-    // текущей задачей) не трогаем. Профиль общий (defaultProfile через
-    // m_page) — кэш/cookies те же, что у приложения.
-    // task-16a: страница ОБЯЗАТЕЛЬНО привязана к реальному QWebEngineView —
-    // print-конвейер Chromium (viz/print handler) инициализируется только
-    // для страницы внутри view: на Windows «сиротная» страница (без view)
-    // давала JS/MathJax ok, но callback printToPdf НИКОГДА не приходил
-    // (30s backstop, пустой PDF). setPage переродительствует page в view
-    // (docs Qt) — владение: view -> page, cleanup ниже уничтожает view.
-    // task-15b: удаление — НЕ сразу после print, а после loadFinished
-    // + grace (блок "cleanup" ниже): уничтожение страницы с in-flight
-    // load/print роняет Chromium, а callback printToPdf при этом
-    // гарантированно срабатывает (docs Qt) — на мёртвый стек.
-    QWebEngineProfile *profile = m_page ? m_page->profile() : QWebEngineProfile::defaultProfile();
-    auto *page = new QWebEnginePage(profile, this);
-    // WebEngineHost — QObject (не QWidget): родительский WIDGET, если он
-    // есть (в приложении — MainWindow), берём через qobject_cast.
-    QWidget *parentW = qobject_cast<QWidget *>(this->parent());
-    auto *view = parentW ? new QWebEngineView(parentW) : new QWebEngineView();
-    view->setPage(page);
-    view->setFixedSize(794, 1123); // ≈A4 @96dpi
-    view->setWindowTitle(tr("Math100 — формирование PDF"));
-    // Qt::Tool: без записи в taskbar (Windows); если флаг даст проблемы
-    // с modality/поведением — см. отчёт task-16a.
-    view->setWindowFlags(view->windowFlags() | Qt::Tool);
-    // База about:blank допустима: скрипты/стили в документе экспорта —
-    // абсолютные (CDN). loadFinished покрывается тем же poll (readyState).
-    page->setHtml(fullHtml, QUrl("about:blank"));
+    // task-18: печать на ОСНОВНОЙ m_page (её view жив — пользователь видит
+    // превью, рендер-пайплайн точно работает). Временная страница в
+    // ОТДЕЛЬНОМ view на Windows 11 / Qt 6.10.3: пустое окно (кадры не
+    // композитятся) + висящий printToPdf — логи 17:06 (3 эскалации пусты)
+    // и 20:30 (300с heartbeat, окно белое). Временная страница больше
+    // не создаётся: экспортный документ временно загружаем в m_page,
+    // печатаем, возвращаем превью.
+    // База about:blank допустима: документ самодостаточный (qrc-ресурсы
+    // + base64-картинки), loadFinished покрывается тем же poll (readyState).
 
-    // 1) Ожидание loadFinished + готовности MathJax (backstop: mathjaxWaitSec).
+    // 1) Сохраняем текущее превью (m_currentTaskHtml/Url) и загружаем
+    //    экспортный документ в m_page — пользователь видит то, что
+    //    формируется.
+    const QString savedHtml = m_currentTaskHtml;
+    const QString savedUrl = m_currentTaskUrl;
+    m_page->setHtml(fullHtml, QUrl("about:blank"));
+
+    // 2) Ожидание loadFinished + готовности MathJax (backstop: mathjaxWaitSec).
     emit statusChanged(tr("Ожидание готовности MathJax..."));
-    const QString mjStatus = waitMathJaxReady(page, mathjaxWaitSec * 1000);
+    const QString mjStatus = waitMathJaxReady(m_page, mathjaxWaitSec * 1000);
     if (mjStatus == "timeout") {
         qWarning() << "[PDF] MathJax: таймаут ожидания (" << mathjaxWaitSec
                    << "s) — продолжаем, формулы могут быть неотрисованы";
@@ -490,60 +481,28 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
                    << "(CDN недоступен?) — формулы не отрисуются";
     }
 
-    // 2) Генерация PDF: task-12 — сначала fitWideMath (callback), потом
-    //    printToPdf внутри callback (та же механика, что в printPdfTo).
-    // task-17: ОДНА попытка, окно ВИДИМО СРАЗУ (эскалация task-16a не
-    // помогла: даже видимое окно не спасало — callback не приходил и там).
-    // Настоящие причины (лог пользователя + исходники Qt 6.10.3):
-    //   (a) «медленная» печать: 20-30 страниц с MathJax-CHTML на слабых
-    //       машинах реально печатаются >30с — прежний backstop резал
-    //       нормальную печать; теперь 300с + heartbeat каждые 15с;
-    //   (b) Qt 6.10 молча скидывает callback при ЛЮБОМ сбое печати (NULL-
-    //       result в обёртке qwebenginepage.cpp) — отличить «медленно» от
-    //       «сбой» по callback нельзя, поэтому main.cpp включает
-    //       --disable-gpu (software-растеризация print-пайплайна — known
-    //       fix для зависающего Chromium-принта на Windows).
-    // Страница пересоздаётся один раз, MathJax уже typeset'нут.
-    view->show();
-    qInfo().noquote() << "[PDFDBG] print started: window=visible, timeout=300s";
+    // 3) Печать: fitWideMath (callback, backstop 5s, task-12) → printToPdf
+    //    (backstop 300с + heartbeat 15с, task-17). На этой странице
+    //    рендеринг живой — ждём честно.
+    qInfo().noquote() << "[PDFDBG] print started: page=main(m_view), timeout=300s";
     emit statusChanged(tr("Создание PDF..."));
     QByteArray pdfData;
     auto onTick = [this](int sec) {
         qInfo().noquote() << "[PDFDBG] printToPdf: ещё печатается..." << sec << "s";
         emit statusChanged(tr("Создание PDF... (%1 с)").arg(sec));
     };
-    printAfterFit(page, pdfData, 300000, onTick);
-    if (pdfData.isEmpty()) {
-        qWarning() << "[PDF] printToPdf пуст после 300s — см. [PDFDBG] heartbeat "
-                   << "в логе: если тикал до 300s — печать зависла (драйвер/GPU/Chromium)";
-    }
-    // task-16a (расширен task-15b): удаление — только когда (1) load
-    // завершён и (2) прошёл grace 3с после print (внутренние операции
-    // Chromium, включая висящий printToPdf после backstop, доведены до
-    // конца). Уничтожаем VIEW: после setPage она владеет page,
-    // page-дети умрут вместе с ней. Явный page->deleteLater() —
-    // страховка (Qt 6.8: deleteLater дебаунсится через deleteLaterCalled
-    // + в деструкторе removePostedEvents — повторный отложенный delete
-    // отбрасывается, двойного удаления нет). QTimer привязан к view:
-    // если view/хост умрут раньше — таймер умрёт с ними и lambda не
-    // сработает (нет UAF). Если load так и не завершился (зависший
-    // рендерер), view живёт до уничтожения родителя (parentWidget) —
-    // ограниченная память, не утечка.
-    auto schedulePageCleanup = [view, page]() {
-        QTimer::singleShot(3000, view, [view, page] {
-            qInfo() << "[PDF] временная страница экспорта удалена (load ok, grace 3s)";
-            view->close();
-            view->deleteLater();
-            page->deleteLater();
-        });
-    };
-    if (page->isLoading()) {
-        // Load ещё идёт (например, MathJax-таймаут: документ не догрузился).
-        QObject::connect(page, &QWebEnginePage::loadFinished, page,
-                         [schedulePageCleanup]() { schedulePageCleanup(); },
-                         Qt::SingleShotConnection);
+    printAfterFit(m_page, pdfData, 300000, onTick);
+
+    // 4) ВОССТАНАВЛИВАЕМ превью — до проверки результата и записи файла:
+    //    пользователь не должен остаться на экспортном документе, даже
+    //    если печать не удалась.
+    if (!savedHtml.isEmpty()) {
+        m_currentTaskHtml = savedHtml;
+        QUrl baseUrl{savedUrl};
+        m_page->setContent(savedHtml.toUtf8(), "text/html", baseUrl);
     } else {
-        schedulePageCleanup();
+        m_currentTaskHtml = QString();
+        showPlaceholder(tr("Введите URL варианта и нажмите «Загрузить»"));
     }
 
     if (pdfData.isEmpty()) {
@@ -565,8 +524,9 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
 
 void WebEngineHost::clearContent()
 {
-    m_page->setHtml("<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;color:#999;font-family:Arial,sans-serif;'><p>Контент очищен</p></body></html>");
+    m_page->setHtml("<html><body style='display:flex;align-items:center;justify-content:center;height:100vh;margin:0;'font-family:Arial,sans-serif;background:#f5f5f5;'><p>Контент очищен</p></body></html>");
     m_currentTaskUrl = "";
+    m_currentTaskHtml = QString(); // task-18: не возвращать старое превью после экспорта
     emit statusChanged("Контент очищен");
 }
 

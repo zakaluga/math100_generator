@@ -154,6 +154,17 @@ int main(int argc, char *argv[])
     // --disable-gpu пренебрежима. Убираем флаг, когда найдем корень точно.
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu");
 
+    // task-18: Chromium-лог в отдельный файл рядом с exe (level 2 = INFO).
+    // Если печать опять не сойдётся — в этом файле будут внутренние
+    // сообщения Chromium (PrintViewManager/PrintRenderFrame/frames):
+    // они видны только здесь, qInstallMessageHandler их не ловит.
+    // Файл append-only и может расти — его можно удалять в любой момент.
+    const QString chromiumLog = selfExeDir() + "/math100_generator_chromium.log";
+    if (!chromiumLog.isEmpty()) {
+        qputenv("QTWEBENGINE_CHROMIUM_LOG_FILE", chromiumLog.toUtf8().constData());
+        qputenv("QTWEBENGINE_CHROMIUM_LOG_LEVEL", "2");
+    }
+
     // Устанавливаем ДО создания QApplication, чтобы не потерять сообщения,
     // появляющиеся ещё на этапе инициализации.
     qInstallMessageHandler(fileMessageHandler);
