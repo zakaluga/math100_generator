@@ -15,6 +15,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QScopeGuard>
+#include <QTemporaryFile>
 #include <functional>
 
 namespace {
@@ -117,6 +118,41 @@ QString waitMathJaxReady(QWebEnginePage *page, int timeoutMs)
     return st->status;
 }
 
+// task-19: ожидание ДОЗАГРУЗКИ нового документа после setHtml/setContent.
+// Критично для печати: printToPdf на странице, которая ЕЩЁ ГРУЗИТСЯ, виснет
+// навсегда (лог 21:10: export-документ загрузился в m_page, но printToPdf
+// был выдан, пока документ ещё парсился/типуэтится — печать зависла на
+// 1230+ с, а Qt 6.10 молча скидывает NULL-callback при отмене — task-17).
+// Также: waitMathJaxReady ДО loadFinished возвращает ЛОЖНОЕ 'ready' — на
+// странице ещё жив старый документ со своей уже готовой MathJax (лог 21:10:
+// poll#1 'ready' url=math100.ru/... — это старая превью-страница, а не
+// export-документ). Сигнал loadFinished доставляется через event loop,
+// поэтому connect сразу после setHtml (до возврата в цикл) его не пропустит.
+// true — loadFinished пришёл; false — backstop-таймаут.
+bool waitForPageLoad(QWebEnginePage *page, int timeoutMs, QString *statusOut = nullptr)
+{
+    struct LoadState : public QObject {
+        QEventLoop loop;
+        bool loaded = false;
+        explicit LoadState(QObject *parent) : QObject(parent) {}
+    };
+    auto *st = new LoadState(page);
+    QObject::connect(page, &QWebEnginePage::loadFinished, st, [st](bool ok) {
+        st->loaded = true;
+        st->loop.quit();
+    });
+    QTimer::singleShot(timeoutMs, st, [st] {
+        if (!st->loaded) {
+            st->loop.quit();
+        }
+    });
+    st->loop.exec();
+    if (statusOut) {
+        *statusOut = st->loaded ? QStringLiteral("loaded") : QStringLiteral("timeout");
+    }
+    return st->loaded;
+}
+
 // Асинхронный printToPdf (Qt 6.8) через callback-перегрузку + локальный
 // event loop; backstop-таймаут. Возвращает true, если callback пришёл.
 // task-15b: состояние (done/loop/таймер) — в куче с родителем page.
@@ -151,8 +187,9 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs,
     // task-17: heartbeat каждые 15с — видно в логе и статус-баре, что
     // печать ещё идёт (на медленных машинах 20-30 страниц с MathJax
     // реально могут печататься дольше прежнего 30с backstop).
+    QTimer *tick = nullptr;
     if (onTick) {
-        auto *tick = new QTimer(st);
+        tick = new QTimer(st);
         QObject::connect(tick, &QTimer::timeout, st, [st, onTick] {
             onTick(st->dbgT.elapsed() / 1000);
         });
@@ -175,9 +212,15 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs,
         st->loop.quit();
     });
     st->loop.exec();
+    // task-19: tick живёт дольше ожидания (родитель = page) — без явной
+    // остановки дёргается каждые 15с ВЕЧНО (лог 21:10: heartbeat до 1230с,
+    // хотя backstop сработал на 300с).
+    if (tick) {
+        tick->stop();
+    }
     if (!st->done) {
         qInfo().noquote() << "[PDFDBG] printToPdf: BACKSTOP fired after" << st->dbgT.elapsed()
-                          << "ms (callback не пришёл)";
+                           << "ms (callback не пришёл)";
     }
     return st->done;
 }
@@ -186,7 +229,17 @@ bool waitForPrintToPdf(QWebEnginePage *page, QByteArray &pdfData, int timeoutMs,
 // window.fitWideMath() (объявлена в app.js для превью и встраивается в
 // экспорт-документы; window.__mathFitted сбрасывается на всякий случай)
 // и ЖДЁТ callback runJavaScript (backstop 5s — сбой fit не останавливает
-// печать), а printToPdf вызывается ВНУТРИ этого callback.
+// печать).
+// task-19f: КОРЕНЬ ВИСНУЩЕЙ ПЕЧАТИ (бисекция в offscreen-контейнере,
+// task-19e: printToPdf виснет ТОЛЬКО когда выдан из callback'а
+// runJavaScript; прямой вызов — 13мс). Причём в минималке «печать из
+// JS-callback» работает, а в приложении — нет: разница в том, что здесь
+// callback заводит ВЛОЖЕННЫЙ event loop (waitForPrintToPdf) прямо внутри
+// доставления результата runJavaScript — реентерабельная блокировка
+// dispatch-канала WebEngine IPC: ответ на printToPdf больше не доставляется.
+// Поэтому callback ТЕПЕРЬ ТОЛЬКО ставит флаг и quit'ит loop, а printToPdf
+// вызывается ПОСЛЕ выхода из loop.exec() — на обычном стеке (там же, где
+// и в рабочем skip-варианте бисекции).
 // task-15b: состояние (started/loop/таймер) — в куче с родителем page:
 // отложенный callback runJavaScript может прийти после выхода из
 // loop.exec() (когда backstop уже сработал) — с локальным `started`
@@ -204,24 +257,29 @@ void printAfterFit(QWebEnginePage *page, QByteArray &pdfData, int printTimeoutMs
     };
     auto *st = new FitState(page);
     st->dbgFitT.start();
-    auto doPrint = [page, &pdfData, st, printTimeoutMs, onTick](auto &&...) {
-        if (st->started) {
-            return;
-        }
-        qInfo().noquote() << "[PDFDBG] printAfterFit: fit-callback path, elapsed="
-                          << st->dbgFitT.elapsed() << "ms";
-        st->started = true;
-        waitForPrintToPdf(page, pdfData, printTimeoutMs, onTick);
-        st->loop.quit();
-    };
-    QTimer *backstop = new QTimer(st);
+    auto *backstop = new QTimer(st);
     backstop->setSingleShot(true);
-    QObject::connect(backstop, &QTimer::timeout, st, doPrint);
-    backstop->start(5000);
+    QObject::connect(backstop, &QTimer::timeout, st, [st] {
+        if (!st->started) {
+            st->loop.quit();
+        }
+    });
     page->runJavaScript(
         "window.__mathFitted=false; if (window.fitWideMath) window.fitWideMath(); 'ok'",
-        doPrint);
+        [st](const QVariant &) {
+            if (st->started) {
+                return;
+            }
+            st->started = true;
+            st->loop.quit();
+        });
+    backstop->start(5000);
     st->loop.exec();
+    qInfo().noquote() << "[PDFDBG] printAfterFit: fit done (started=" << st->started
+                      << "), elapsed=" << st->dbgFitT.elapsed()
+                      << "ms — printToPdf вне JS-callback (task-19f)";
+    // Печать — ПОСЛЕ возврата из loop.exec() (см. task-19f в комментарии).
+    waitForPrintToPdf(page, pdfData, printTimeoutMs, onTick);
 }
 
 // Запись готовых байтов PDF в файл. false + *errorOut при ошибке.
@@ -404,10 +462,10 @@ bool WebEngineHost::printPdfTo(const QString &filePath)
 
     // 2) Генерация PDF. task-12: перед printToPdf принудительно повторяем
     //    подгонку широких display-формул (window.fitWideMath) и ждём её
-    //    callback; сам printToPdf вызывается внутри этого callback
-    //    (Qt 6.8: асинхронный, callback + локальный event loop,
-    //    страховка-таймаут). task-17: 120с (было 30с) — на медленных
-    //    Windows-машинах печать одной задачи с MathJax тоже может тянуться.
+    //    callback; printToPdf вызывается ПОСЛЕ callback (task-19f: печать
+    //    из JS-callback с вложенным loop вешала WebEngine IPC). task-17:
+    //    120с (было 30с) — на медленных Windows-машинах печать одной задачи
+    //    с MathJax тоже может тянуться.
     emit statusChanged(tr("Создание PDF..."));
 
     QByteArray pdfData;
@@ -465,33 +523,75 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
     // 1) Сохраняем текущее превью (m_currentTaskHtml/Url) и загружаем
     //    экспортный документ в m_page — пользователь видит то, что
     //    формируется.
+    // task-19b: ЭКСПЕРИМЕНТ (local repro: printToPdf на about:blank-странице
+    // из setHtml виснет навсегда, даже plain-документ, offscreen Qt 6.8.2) —
+    // пишем документ во временный файл и навигируем туда file://.
     const QString savedHtml = m_currentTaskHtml;
     const QString savedUrl = m_currentTaskUrl;
+    // task-19c: ЭКСПЕРИМЕНТ — назад к setHtml(about:blank): минимальный flow
+    // (setHtml → loadFinished → printToPdf) на РЕАЛЬНОЙ странице приложения
+    // работает (13мс), a load(file://temp) в потоке printHtmlToPdf — виснет.
     m_page->setHtml(fullHtml, QUrl("about:blank"));
 
-    // 2) Ожидание loadFinished + готовности MathJax (backstop: mathjaxWaitSec).
-    emit statusChanged(tr("Ожидание готовности MathJax..."));
-    const QString mjStatus = waitMathJaxReady(m_page, mathjaxWaitSec * 1000);
-    if (mjStatus == "timeout") {
-        qWarning() << "[PDF] MathJax: таймаут ожидания (" << mathjaxWaitSec
-                   << "s) — продолжаем, формулы могут быть неотрисованы";
-        emit statusChanged(tr("MathJax не готов (таймаут), продолжаем..."));
-    } else if (mjStatus == "absent") {
-        qWarning() << "[PDF] MathJax не обнаружен в документе экспорта "
-                   << "(CDN недоступен?) — формулы не отрисуются";
+    // 2a) task-19: СНАЧАЛА ждём, пока НОВЫЙ документ догрузится. До этого на
+    //     странице ещё жив СТАРОЙ документ: (а) waitMathJaxReady даёт ложное
+    //     'ready' по её готовой MathJax (лог 21:10: poll#1 'ready'
+    //     url=math100.ru/... — старая превью-страница), (б) printToPdf,
+    //     выданный на грузящуюся страницу, виснет навсегда (там же: печать
+    //     вешалась 1230+ с). До task-18 временная страница была пустая,
+    //     и ложного 'ready' не было — отсюда регрессия.
+    // task-19e: ДИАГНОСТИЧЕСКИЕ ВЫКЛЮЧАТЕЛИ (env MATH100_PDF_SKIP=load,mj,fit)
+    // для бисекции висящей печати в offscreen-контейнере.
+    const QString pdfSkip = qEnvironmentVariable("MATH100_PDF_SKIP");
+
+    // 2a) Ожидание догрузки нового документа.
+    QString loadStatus = QStringLiteral("skipped");
+    if (!pdfSkip.contains("load")) {
+        emit statusChanged(tr("Ожидание загрузки документа..."));
+        waitForPageLoad(m_page, mathjaxWaitSec * 1000, &loadStatus);
+        qInfo().noquote() << "[PDFDBG] export doc load:" << loadStatus
+                          << "url=" << m_page->url().toString();
+        if (loadStatus != "loaded") {
+            qWarning() << "[PDF] export-документ не закончил загрузку (" << loadStatus
+                       << ") — продолжаем, печать может не состояться";
+        }
+    } else {
+        qInfo().noquote() << "[PDFDBG] SKIP load wait";
+    }
+
+    // 2b) Ожидание готовности MathJax (backstop: mathjaxWaitSec).
+    QString mjStatus = QStringLiteral("skipped");
+    if (!pdfSkip.contains("mj")) {
+        emit statusChanged(tr("Ожидание готовности MathJax..."));
+        mjStatus = waitMathJaxReady(m_page, mathjaxWaitSec * 1000);
+        if (mjStatus == "timeout") {
+            qWarning() << "[PDF] MathJax: таймаут ожидания (" << mathjaxWaitSec
+                       << "s) — продолжаем, формулы могут быть неотрисованы";
+            emit statusChanged(tr("MathJax не готов (таймаут), продолжаем..."));
+        } else if (mjStatus == "absent") {
+            qWarning() << "[PDF] MathJax не обнаружен в документе экспорта "
+                       << "(CDN недоступен?) — формулы не отрисуются";
+        }
+    } else {
+        qInfo().noquote() << "[PDFDBG] SKIP MathJax wait";
     }
 
     // 3) Печать: fitWideMath (callback, backstop 5s, task-12) → printToPdf
-    //    (backstop 300с + heartbeat 15с, task-17). На этой странице
-    //    рендеринг живой — ждём честно.
-    qInfo().noquote() << "[PDFDBG] print started: page=main(m_view), timeout=300s";
+    //    (backstop 300с + heartbeat 15с, task-17).
+    qInfo().noquote() << "[PDFDBG] print started: page=main(m_view), timeout=300s"
+                      << "skip=" << (pdfSkip.isEmpty() ? "-" : pdfSkip);
     emit statusChanged(tr("Создание PDF..."));
     QByteArray pdfData;
     auto onTick = [this](int sec) {
         qInfo().noquote() << "[PDFDBG] printToPdf: ещё печатается..." << sec << "s";
         emit statusChanged(tr("Создание PDF... (%1 с)").arg(sec));
     };
-    printAfterFit(m_page, pdfData, 300000, onTick);
+    if (pdfSkip.contains("fit")) {
+        qInfo().noquote() << "[PDFDBG] SKIP fit — прямой waitForPrintToPdf";
+        waitForPrintToPdf(m_page, pdfData, 300000, onTick);
+    } else {
+        printAfterFit(m_page, pdfData, 300000, onTick);
+    }
 
     // 4) ВОССТАНАВЛИВАЕМ превью — до проверки результата и записи файла:
     //    пользователь не должен остаться на экспортном документе, даже

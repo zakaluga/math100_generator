@@ -22,6 +22,10 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // task-19: доступ к хосту для print-selftest (MATH100_SELFTEST_PRINT)
+    // в main.cpp.
+    WebEngineHost *webEngine() const { return m_webEngine; }
+
 private slots:
     void onFetchUrl();
     void onTaskSelected(int index);

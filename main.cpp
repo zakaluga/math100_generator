@@ -9,6 +9,14 @@
 #include <QMutex>
 #include "mainwindow.h"
 
+#include "webenginehost.h"
+
+#include <QWebEnginePage>
+#include <QWebEngineView>
+#include <QEventLoop>
+#include <QTimer>
+#include <QThread>
+
 #include <cstdio>
 
 #if defined(Q_OS_WIN)
@@ -147,23 +155,35 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext &context, const
 
 int main(int argc, char *argv[])
 {
-    // task-17: Chromium print-пайплайн на Windows зависает с GPU-растеризацией
-    // (printToPdf callback не приходит никогда, даже на видимом view — лог
-    // пользователя 17:06-17:09, все 3 эскалации пусты). Software-растеризация
-    // стабильна для печати; для этого приложения (статичный контент) цена
-    // --disable-gpu пренебрежима. Убираем флаг, когда найдем корень точно.
-    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu");
-
-    // task-18: Chromium-лог в отдельный файл рядом с exe (level 2 = INFO).
-    // Если печать опять не сойдётся — в этом файле будут внутренние
-    // сообщения Chromium (PrintViewManager/PrintRenderFrame/frames):
-    // они видны только здесь, qInstallMessageHandler их не ловит.
+    // task-17: Chromium print-пайплайн на Windows зависает (printToPdf
+    // callback не приходит никогда — логи пользователя 17:06/21:10).
+    // Software-растеризация стабильна для печати; цена --disable-gpu для
+    // этого приложения (статичный контент) пренебрежима.
+    // task-19: + Chromium-лог в файл рядом с exe. ВАЖНО: env
+    // QTWEBENGINE_CHROMIUM_LOG_FILE в Qt 6.8/6.10 файл НЕ создаёт
+    // (проверено selftest'ом) — работает только нативный Chromium-флаг
+    // --log-file (base::logging). --log-level=0 = INFO и выше: в этом
+    // уровне пишет print-пайплайн (PrintViewManager/PrintRenderFrame).
     // Файл append-only и может расти — его можно удалять в любой момент.
     const QString chromiumLog = selfExeDir() + "/math100_generator_chromium.log";
+    // Если env уже задан (отладка) — НЕ затираем, а дописываем свои флаги.
+    QString chromiumFlags = qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS");
+    if (!chromiumFlags.isEmpty()) {
+        chromiumFlags += QLatin1Char(' ');
+    }
+    // task-19d: отключаемо для отладки (MATH100_NO_DISABLEGPU=1): в
+    // offscreen-окружении (headless-контейнер) printToPdf с --disable-gpu
+    // виснет, а без него работает — подозреваем именно этот флаг.
+    if (!qEnvironmentVariableIsSet("MATH100_NO_DISABLEGPU")) {
+        chromiumFlags += QStringLiteral("--disable-gpu");
+    }
     if (!chromiumLog.isEmpty()) {
+        chromiumFlags += QStringLiteral(" --log-file=%1 --log-level=0").arg(chromiumLog);
+        // на всякий случай оставляем и Qt-env (на других сборках может сработать)
         qputenv("QTWEBENGINE_CHROMIUM_LOG_FILE", chromiumLog.toUtf8().constData());
         qputenv("QTWEBENGINE_CHROMIUM_LOG_LEVEL", "2");
     }
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", chromiumFlags.toUtf8().constData());
 
     // Устанавливаем ДО создания QApplication, чтобы не потерять сообщения,
     // появляющиеся ещё на этапе инициализации.
@@ -186,6 +206,135 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+
+    // task-19: print-selftest (env MATH100_SELFTEST_PRINT=[путь.pdf]).
+    // Прогоняет весь экспортный print-путь (setHtml → waitForPageLoad →
+    // waitMathJaxReady → fitWideMath → printToPdf → восстановление превью)
+    // на маленьком документе с MathJax — то же самое, что делает экспорт,
+    // без UI и без сети. 0 = PDF создан и не пустой.
+    if (qEnvironmentVariableIsSet("MATH100_SELFTEST_PRINT")) {
+        const QString envVal = qEnvironmentVariable("MATH100_SELFTEST_PRINT");
+        const QString outPath = envVal.isEmpty()
+            ? QDir::tempPath() + "/selftest_print.pdf"
+            : envVal;
+        // Математика/конфиг MathJax — как в экспортном документе
+        // (NetworkManager::buildExportPageHtml).
+        QString testHtml = QStringLiteral(R"SELFTEST_HTML(<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Selftest</title>
+<script>
+    window.MathJax = {
+        tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']],
+               processEscapes: true, processEnvironments: true },
+        options: { skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre'] },
+        startup: {
+            ready: function() {
+                MathJax.startup.defaultReady();
+                MathJax.startup.promise.then(function() {
+                    if (window.fitWideMath) window.fitWideMath();
+                });
+            }
+        }
+    };
+</script>
+<script src="qrc:/mathjax/es5/tex-mml-chtml.js" async></script>
+<style>
+    body { font-family: 'Times New Roman', Times, serif; font-size: 16pt; margin: 0; padding: 0; }
+    @page { size: A4; margin: 10mm 10mm 12mm 10mm; }
+</style>
+</head>
+<body>
+<h2>Selftest-документ</h2>
+<p>Формула: \[ x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a} \]</p>
+<p>Вторая: \( \int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2} \)</p>
+</body>
+</html>
+)SELFTEST_HTML");
+        // MATH100_SELFTEST_PLAIN=1 — документ БЕЗ MathJax (диагностика:
+        // работает ли printToPdf вообще в этой среде).
+        const bool plain = qEnvironmentVariableIsSet("MATH100_SELFTEST_PLAIN");
+        if (plain) {
+            testHtml = QStringLiteral("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>body{font-family:Arial,sans-serif;font-size:16pt;}</style></head>"
+                "<body><h1>Plain selftest</h1><p>1 2 3 4 5</p></body></html>");
+        }
+
+        // MATH100_SELFTEST_MINIMAL=1 — диагностика: ТОЧНО минимальный flow
+        // (setHtml about:blank → loadFinished → printToPdf callback) на
+        // РЕАЛЬНОЙ странице приложения (view внутри видимого окна).
+        // Отделяет «окружение приложения» от «потока printHtmlToPdf».
+        if (qEnvironmentVariableIsSet("MATH100_SELFTEST_MINIMAL")) {
+            QWebEnginePage *page = window.webEngine()->view()->page();
+            const QString minDoc = QStringLiteral("<html><head><meta charset='utf-8'></head>"
+                "<body style='font-family:Arial;font-size:20pt'><h1>Minimal</h1>"
+                "<p>print test</p></body></html>");
+            page->setHtml(minDoc, QUrl("about:blank"));
+            QEventLoop loadLoop;
+            QObject::connect(page, &QWebEnginePage::loadFinished, &loadLoop,
+                             [&loadLoop](bool) { loadLoop.quit(); });
+            QTimer::singleShot(15000, &loadLoop, [&loadLoop] { loadLoop.quit(); });
+            loadLoop.exec();
+            qInfo().noquote() << "[SELFTEST] minimal: loaded, url=" << page->url().toString();
+            QEventLoop printLoop;
+            bool got = false;
+            long size = -1;
+            QElapsedTimer pt;
+            pt.start();
+            page->printToPdf([&](const QByteArray &data) {
+                size = (long)data.size();
+                got = data.size() > 0;
+                printLoop.quit();
+            });
+            QTimer::singleShot(30000, &printLoop, [&printLoop] { printLoop.quit(); });
+            printLoop.exec();
+            qInfo().noquote() << "[SELFTEST] minimal print:" << (got ? "OK" : "HANG")
+                              << "size=" << size << "after" << pt.elapsed() << "ms";
+            return got ? 0 : 1;
+        }
+
+        // MATH100_SELFTEST_SYNC=1 — диагностика: СТАРАЯ синхронная
+        // printToPdf(QByteArray*) (deprecated, блокирующая) вместо асинхронной
+        // callback-версии. Если она работает, а callback-версия виснет —
+        // баг именно в async-обёртке этой сборки Qt.
+        if (qEnvironmentVariableIsSet("MATH100_SELFTEST_SYNC")) {
+            QWebEnginePage *page = window.webEngine()->view()->page();
+            page->setHtml(testHtml, QUrl("about:blank"));
+            QEventLoop loadLoop;
+            QObject::connect(page, &QWebEnginePage::loadFinished, &loadLoop,
+                             [&loadLoop](bool) { loadLoop.quit(); });
+            QTimer::singleShot(30000, &loadLoop, [&loadLoop] { loadLoop.quit(); });
+            loadLoop.exec();
+            qInfo().noquote() << "[SELFTEST] sync: doc loaded, url="
+                              << page->url().toString();
+            // ВАРИАНТ A: перегрузка printToPdf(filePath) — пишет PDF
+            // напрямую в файл БЕЗ callback (если callback-механика
+            // сломана, это может обойти баг). Ждём появления файла.
+            QFile::remove(outPath);
+            page->printToPdf(outPath);
+            qInfo().noquote() << "[SELFTEST] printToPdf(filePath) issued, waiting for file...";
+            for (int i = 0; i < 120; ++i) {
+                QThread::msleep(1000);
+                QFile f(outPath);
+                if (f.exists() && f.size() > 500) {
+                    qInfo().noquote() << "[SELFTEST] file appeared, size=" << f.size()
+                                      << "after" << (i + 1) << "s";
+                    return 0;
+                }
+            }
+            qWarning() << "[SELFTEST] printToPdf(filePath): file did not appear in 120s";
+            return 1;
+        }
+        qInfo().noquote() << "[SELFTEST] start, out=" << outPath
+                          << (plain ? "mode=plain" : "mode=mathjax");
+        const bool ok = window.webEngine()->printHtmlToPdf(testHtml, outPath, plain ? 60 : 120);
+        QFile f(outPath);
+        const qint64 size = f.exists() ? f.size() : -1;
+        qInfo().noquote() << "[SELFTEST] result ok=" << (ok ? "true" : "false")
+                          << "size=" << size << "file=" << outPath;
+        return (ok && size > 500) ? 0 : 1;
+    }
 
     return app.exec();
 }
