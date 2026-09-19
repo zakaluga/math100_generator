@@ -434,13 +434,28 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
     // Отдельная временная страница: отображаемую m_page (видимый view с
     // текущей задачей) не трогаем. Профиль общий (defaultProfile через
     // m_page) — кэш/cookies те же, что у приложения.
-    // task-15b: родитель = this (страница-сирота не остаётся в памяти
-    // при сбое) и удаление — НЕ сразу после print, а после loadFinished
+    // task-16a: страница ОБЯЗАТЕЛЬНО привязана к реальному QWebEngineView —
+    // print-конвейер Chromium (viz/print handler) инициализируется только
+    // для страницы внутри view: на Windows «сиротная» страница (без view)
+    // давала JS/MathJax ok, но callback printToPdf НИКОГДА не приходил
+    // (30s backstop, пустой PDF). setPage переродительствует page в view
+    // (docs Qt) — владение: view -> page, cleanup ниже уничтожает view.
+    // task-15b: удаление — НЕ сразу после print, а после loadFinished
     // + grace (блок "cleanup" ниже): уничтожение страницы с in-flight
     // load/print роняет Chromium, а callback printToPdf при этом
     // гарантированно срабатывает (docs Qt) — на мёртвый стек.
     QWebEngineProfile *profile = m_page ? m_page->profile() : QWebEngineProfile::defaultProfile();
     auto *page = new QWebEnginePage(profile, this);
+    // WebEngineHost — QObject (не QWidget): родительский WIDGET, если он
+    // есть (в приложении — MainWindow), берём через qobject_cast.
+    QWidget *parentW = qobject_cast<QWidget *>(this->parent());
+    auto *view = parentW ? new QWebEngineView(parentW) : new QWebEngineView();
+    view->setPage(page);
+    view->setFixedSize(794, 1123); // ≈A4 @96dpi
+    view->setWindowTitle(tr("Math100 — формирование PDF"));
+    // Qt::Tool: без записи в taskbar (Windows); если флаг даст проблемы
+    // с modality/поведением — см. отчёт task-16a.
+    view->setWindowFlags(view->windowFlags() | Qt::Tool);
     // База about:blank допустима: скрипты/стили в документе экспорта —
     // абсолютные (CDN). loadFinished покрывается тем же poll (readyState).
     page->setHtml(fullHtml, QUrl("about:blank"));
@@ -459,28 +474,62 @@ bool WebEngineHost::printHtmlToPdf(const QString &fullHtml, const QString &fileP
 
     // 2) Генерация PDF: task-12 — сначала fitWideMath (callback), потом
     //    printToPdf внутри callback (та же механика, что в printPdfTo).
+    // task-16a: до 3 попыток с эскалацией видимости view — print-конвейер
+    // Chromium на Windows может не инициализироваться, пока view не стал
+    // «видимым» (в разных смыслах): попытка 1 — WA_DontShowOnScreen
+    // (видим для layout/рендера, без окна), попытка 2 — невидимое
+    // tool-окно за экраном, попытка 3 — реально видимое окно (крайний
+    // случай, пользователь видит процесс). Страница между попытками НЕ
+    // пересоздаётся: MathJax уже typeset'нут, setHtml выше — один раз.
     emit statusChanged(tr("Создание PDF..."));
     QByteArray pdfData;
-    printAfterFit(page, pdfData);
-
-    // task-12c: страховка от мигания Chromium — пустой результат первой
-    // попытки повторяем ОДИН раз (страница ещё жива), прежде чем объявлять
-    // ошибку.
-    if (pdfData.isEmpty()) {
-        qWarning() << "[PDF] первая попытка пуста — retry printToPdf";
-        emit statusChanged(tr("PDF пуст, повторная попытка..."));
+    const struct { const char *mode; const char *status; } kAttemptModes[] = {
+        {"dontshow",  "Создание PDF (попытка 1: offscreen-видимость)..."},
+        {"offscreen", "PDF пуст, повтор (попытка 2: окно за экраном)..."},
+        {"visible",   "PDF пуст, повтор (попытка 3: окно видно)..."},
+    };
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (attempt == 0) {
+            view->setAttribute(Qt::WA_DontShowOnScreen, true);
+        } else if (attempt == 1) {
+            // Неудача «чистого» offscreen — даём view настоящее (но
+            // вынесенное за экран) окно: на Windows именно show()
+            // инициализирует нативное окно + print-конвейер.
+            view->setAttribute(Qt::WA_DontShowOnScreen, false);
+            view->move(-4000, -4000);
+        } else {
+            // Крайний случай: окно реально видно (tool-окно, без записи
+            // в taskbar). Пользователь видит процесс формирования PDF.
+            view->move(0, 0);
+        }
+        view->show();
+        qInfo().noquote() << "[PDFDBG] attempt" << (attempt + 1) << ": window="
+                          << kAttemptModes[attempt].mode;
+        emit statusChanged(tr(kAttemptModes[attempt].status));
         printAfterFit(page, pdfData);
+        if (!pdfData.isEmpty()) {
+            break;
+        }
+        qWarning() << "[PDF] попытка" << (attempt + 1) << "(window="
+                   << kAttemptModes[attempt].mode << ") пуста — следующая";
     }
-    // task-15b: удаление страницы — только когда (1) load завершён и
-    // (2) прошёл grace 3с после print (внутренние операции Chromium,
-    // включая висящий printToPdf после backstop, доведены до конца).
-    // QTimer привязан к page: если страница/хост умрут раньше — таймер
-    // умрёт с ними и lambda не сработает (нет UAF). Если load так и не
-    // завершился (зависший рендерер), страница живёт до уничтожения
-    // WebEngineHost (родитель this) — ограниченная память, не утечка.
-    auto schedulePageCleanup = [page]() {
-        QTimer::singleShot(3000, page, [page] {
+    // task-16a (расширен task-15b): удаление — только когда (1) load
+    // завершён и (2) прошёл grace 3с после print (внутренние операции
+    // Chromium, включая висящий printToPdf после backstop, доведены до
+    // конца). Уничтожаем VIEW: после setPage она владеет page,
+    // page-дети умрут вместе с ней. Явный page->deleteLater() —
+    // страховка (Qt 6.8: deleteLater дебаунсится через deleteLaterCalled
+    // + в деструкторе removePostedEvents — повторный отложенный delete
+    // отбрасывается, двойного удаления нет). QTimer привязан к view:
+    // если view/хост умрут раньше — таймер умрёт с ними и lambda не
+    // сработает (нет UAF). Если load так и не завершился (зависший
+    // рендерер), view живёт до уничтожения родителя (parentWidget) —
+    // ограниченная память, не утечка.
+    auto schedulePageCleanup = [view, page]() {
+        QTimer::singleShot(3000, view, [view, page] {
             qInfo() << "[PDF] временная страница экспорта удалена (load ok, grace 3s)";
+            view->close();
+            view->deleteLater();
             page->deleteLater();
         });
     };
